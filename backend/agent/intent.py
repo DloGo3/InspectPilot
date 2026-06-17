@@ -61,9 +61,11 @@ def extract_filters(question: str) -> Dict[str, Any]:
     if plan_match:
         filters["plan_no"] = plan_match.group(1) if plan_match.group(1).startswith("P-") else plan_match.group(2)
 
-    billet_match = re.search(r"(B\d{8,}|方坯(?:ID|id| Id)?[:：]?\s*([A-Za-z0-9-]+))", question)
+    billet_match = re.search(r"(B\d{8,})", question)
+    if not billet_match:
+        billet_match = re.search(r"方坯(?:\s*ID|ID|id| Id)?[:：]\s*([A-Za-z0-9-]+)", question)
     if billet_match:
-        filters["billet_id"] = billet_match.group(1) if billet_match.group(1).startswith("B") else billet_match.group(2)
+        filters["billet_id"] = billet_match.group(1)
 
     if "头部" in question:
         filters["length_region"] = "head"
@@ -98,4 +100,3 @@ def parse_time_range(question: str, db_path: Optional[str] = None) -> Tuple[Opti
 
 def should_use_rag(question: str, intent: str) -> bool:
     return intent == "report" or any(word in question for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议"])
-

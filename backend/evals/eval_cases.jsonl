@@ -1,0 +1,8 @@
+{"id":"type_top_all","question":"哪类缺陷最多？","expected_tools":["group_defects_by_type"],"must_contain":["裂纹","9","33.33"],"must_not_contain":[],"expect_insufficient":false}
+{"id":"face_top_all","question":"哪个方坯表面缺陷最多？","expected_tools":["group_defects_by_face"],"must_contain":["右表面","9","33.33"],"must_not_contain":[],"expect_insufficient":false}
+{"id":"crack_position","question":"裂纹主要集中在哪里？","expected_tools":["group_defects_by_position","group_defects_by_face"],"must_contain":["头部","边部","右表面","5"],"must_not_contain":[],"expect_insufficient":false}
+{"id":"top_ng_billet","question":"哪个方坯 ID 的 NG 率最高？","expected_tools":["get_top_ng_billets"],"must_contain":["B20260614007","17.36"],"must_not_contain":[],"expect_insufficient":false}
+{"id":"no_data_guardrail","question":"炉号 F99999999 哪类缺陷最多？","expected_tools":["group_defects_by_type"],"must_contain":["当前数据不足以判断"],"must_not_contain":["F25061403","B20260614007"],"expect_insufficient":true}
+{"id":"greeting_no_tool","question":"晚上好","expected_tools":[],"must_contain":["晚上好","InspectPilot"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}
+{"id":"help_no_tool","question":"你能做什么？","expected_tools":[],"must_contain":["缺陷","表面","报告"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}
+{"id":"out_of_scope_no_tool","question":"帮我推荐晚饭","expected_tools":[],"must_contain":["暂不支持","方坯表面缺陷"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}

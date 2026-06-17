@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .pytest_tmp/
+pytest_tmp*/
+backend/pytest_tmp*/
+backend/.env
 backend/data/defects.db
 docs/reports/*.md
 frontend/node_modules/
 frontend/dist/
-

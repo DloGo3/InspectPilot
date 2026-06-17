@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -9,8 +9,19 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    intent: str
-    tool_results: Dict[str, Any]
+    scope: str = "defect_analysis"
+    direct_answer: Optional[str] = None
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence: List[Dict[str, Any]] = Field(default_factory=list)
+    time_window: Dict[str, Any] = Field(default_factory=dict)
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+    planner_mode: str = "fallback"
+    answer_mode: str = "fallback"
+    llm_used: bool = False
+    llm_error: Optional[str] = None
+    intent: str = "unknown"
+    tool_results: Dict[str, Any] = Field(default_factory=dict)
     report_path: Optional[str] = None
 
 
@@ -19,4 +30,3 @@ class ReportRequest(BaseModel):
     end_time: Optional[str] = None
     filters: Dict[str, Any] = Field(default_factory=dict)
     title: str = "方坯表面缺陷统计与空间分布分析报告"
-
