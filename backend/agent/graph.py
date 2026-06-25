@@ -181,6 +181,7 @@ def classify_user_scope_node(state: AgentState) -> AgentState:
     state["tool_calls"] = []
     state["planned_tool_calls"] = []
     state["kb_evidence"] = []
+    state["rag_trace"] = []
     state["evidence"] = []
     state["warnings"] = []
     state["errors"] = []
@@ -207,6 +208,7 @@ def direct_answer_node(state: AgentState) -> AgentState:
     state["planned_tool_calls"] = []
     state["tool_results"] = {}
     state["kb_evidence"] = []
+    state["rag_trace"] = []
     state["evidence"] = []
     state["warnings"] = []
     state["planner_mode"] = "none"
@@ -318,6 +320,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
     tool_calls: List[Dict[str, Any]] = []
     evidence: List[Dict[str, Any]] = []
     kb_evidence: List[Dict[str, Any]] = []
+    rag_trace: List[Dict[str, Any]] = []
     warnings = list(state.get("warnings", []))
     filters = dict(state.get("filters", {}))
     time_window = dict(state.get("time_window", {}))
@@ -343,6 +346,16 @@ def execute_tools_node(state: AgentState) -> AgentState:
         summary = summarize_result(name, result) if execution.get("ok") else "工具调用失败。"
         if name == "retrieve_defect_knowledge" and result.get("items"):
             kb_evidence.extend(result.get("items", []))
+        if name == "retrieve_defect_knowledge" and result.get("trace"):
+            trace = dict(result.get("trace") or {})
+            trace["need_rag"] = bool(state.get("need_rag", False))
+            trace["tool_name"] = name
+            trace_warnings = list(trace.get("warnings", []))
+            for warning in execution.get("warnings", []):
+                if warning not in trace_warnings:
+                    trace_warnings.append(warning)
+            trace["warnings"] = trace_warnings
+            rag_trace.append(trace)
         tool_calls.append(
             {
                 "name": name,
@@ -372,6 +385,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
     state["tool_results"] = tool_results
     state["tool_calls"] = tool_calls
     state["kb_evidence"] = kb_evidence
+    state["rag_trace"] = rag_trace
     state["evidence"] = evidence
     state["warnings"] = warnings
     state["filters"] = filters
@@ -467,6 +481,17 @@ def generate_answer_node(state: AgentState) -> AgentState:
     return state
 
 
+def _finalize_rag_trace(state: AgentState) -> AgentState:
+    traces: List[Dict[str, Any]] = []
+    for trace in state.get("rag_trace", []):
+        updated = dict(trace)
+        updated["need_rag"] = bool(state.get("need_rag", False))
+        updated["answer_mode"] = state.get("answer_mode", "fallback")
+        traces.append(updated)
+    state["rag_trace"] = traces
+    return state
+
+
 def build_graph():
     if StateGraph is None:
         return None
@@ -510,5 +535,5 @@ def _run_without_langgraph(initial_state: AgentState) -> AgentState:
 def run_agent(question: str, force_fallback: bool = False) -> AgentState:
     initial_state: AgentState = {"question": question, "force_fallback": force_fallback}
     if COMPILED_GRAPH is not None:
-        return COMPILED_GRAPH.invoke(initial_state)
-    return _run_without_langgraph(initial_state)
+        return _finalize_rag_trace(COMPILED_GRAPH.invoke(initial_state))
+    return _finalize_rag_trace(_run_without_langgraph(initial_state))

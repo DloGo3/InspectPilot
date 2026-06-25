@@ -37,6 +37,24 @@
           </ol>
         </section>
 
+        <section v-if="ragTrace.length" class="evidence-section">
+          <h2>RAG Trace</h2>
+          <ul class="trace-list">
+            <li v-for="trace in ragTrace" :key="trace.trace_id">
+              <div class="trace-title">
+                <strong>{{ trace.trace_id }}</strong>
+                <span>{{ trace.retriever || "-" }}</span>
+                <span>top_k={{ trace.top_k || "-" }}</span>
+              </div>
+              <div class="evidence-meta">
+                <span>answer={{ trace.answer_mode || "-" }}</span>
+                <span>model={{ trace.embedding_model || "-" }}</span>
+                <span>docs={{ (trace.selected_doc_ids || []).join(", ") }}</span>
+              </div>
+            </li>
+          </ul>
+        </section>
+
         <section v-if="toolCalls.length" class="evidence-section">
           <h2>工具调用</h2>
           <ul class="tool-list">
@@ -64,6 +82,7 @@ const apiBase = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
 const knowledgeEvidence = computed(() => response.value?.kb_evidence || []);
 const toolCalls = computed(() => response.value?.tool_calls || []);
+const ragTrace = computed(() => response.value?.rag_trace || []);
 
 function formatScore(score) {
   if (typeof score !== "number") {
@@ -247,6 +266,34 @@ button:disabled {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.trace-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-list li {
+  padding: 10px 12px;
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.trace-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: #102a43;
+}
+
+.trace-title span {
+  color: #627d98;
+  font-size: 13px;
 }
 
 .tool-list li {

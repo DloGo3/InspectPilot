@@ -23,7 +23,7 @@ def infer_intent(question: str) -> str:
     q = question.strip()
     if "报告" in q or "生成" in q:
         return "report"
-    if any(word in q for word in ["原因", "为什么", "标准", "等级", "规则", "模板", "说明", "解释", "怎么判定", "如何判定", "建议"]):
+    if any(word in q for word in ["原因", "为什么", "标准", "等级", "规则", "模板", "说明", "解释", "怎么判定", "如何判定", "建议", "导致", "一定"]):
         return "knowledge"
     if "图片" in q or "原图" in q or "图像" in q:
         return "images"
@@ -103,5 +103,5 @@ def parse_time_range(question: str, db_path: Optional[str] = None) -> Tuple[Opti
 def should_use_rag(question: str, intent: str) -> bool:
     return intent in {"knowledge", "report"} or any(
         word in question
-        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核"]
+        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核", "导致", "一定"]
     )

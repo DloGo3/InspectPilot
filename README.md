@@ -15,8 +15,15 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - RAG 知识检索：`retrieve_defect_knowledge` 从 `backend/rag/knowledge_base.md` 检索缺陷类别、等级规则、判定标准、常见原因和报告模板
 - FAISS/BGE 优先：安装 `faiss-cpu`、`sentence-transformers` 后使用 `BAAI/bge-small-zh-v1.5` 建索引；依赖缺失时自动降级到关键词检索，保证本地演示不断流
 - OpenAI 兼容接口：支持 OpenAI、通义千问、DeepSeek、本地兼容服务等
-- 统一响应字段：`answer`、`tool_calls`、`evidence`、`kb_evidence`、`time_window`、`filters`、`warnings`
+- 统一响应字段：`answer`、`tool_calls`、`evidence`、`kb_evidence`、`rag_trace`、`time_window`、`filters`、`warnings`
 - 最小评测集：覆盖工具选择、关键统计结果、无数据不编造规则
+
+## v0.3.1 RAG Eval + Debug Trace
+
+- API 新增 `rag_trace`：记录每次知识检索的 `trace_id`、原始 query、retriever、embedding model、top_k、候选 doc_id、score、category、tags、source、answer_mode 和 warnings
+- 前端新增 RAG Trace 展示区：演示时可以直接看到本次回答引用了哪些知识片段
+- `eval_runner.py` 支持 RAG 专用检查：`expected_need_rag`、`must_not_tools`、`expected_top_doc_ids`、`expected_any_doc_ids`、`expected_relevant_doc_ids`
+- eval 输出 RAG 指标：`recall@K`、`mrr`、`irrelevant_rate`，用于后续 query rewrite、hybrid retrieval、rerank 的量化对比
 
 ## 启动后端
 

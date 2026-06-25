@@ -16,6 +16,7 @@ class AgentState(TypedDict, total=False):
     tool_results: Dict[str, Any]
     need_rag: bool
     kb_evidence: List[Dict[str, Any]]
+    rag_trace: List[Dict[str, Any]]
     evidence: List[Dict[str, Any]]
     answer: str
     report_path: Optional[str]

@@ -13,7 +13,7 @@ from tools.defect_tools import (
     query_defect_stats,
     query_defects_by_furnace,
 )
-from rag.retriever import retrieve_knowledge
+from rag.retriever import build_rag_trace, retrieve_knowledge
 
 ALLOWED_FILTERS = {
     "defect_type",
@@ -30,6 +30,16 @@ ALLOWED_LENGTH_REGIONS = {"head", "middle", "tail"}
 ALLOWED_WIDTH_REGIONS = {"edge", "center"}
 ALLOWED_SEVERITY = {"minor", "major", "critical"}
 
+def retrieve_defect_knowledge_tool(query: str, top_k: int = 3) -> Dict[str, Any]:
+    items = retrieve_knowledge(query=query, top_k=top_k)
+    return {
+        "query": query,
+        "top_k": top_k,
+        "items": items,
+        "trace": build_rag_trace(query=query, top_k=top_k, items=items),
+    }
+
+
 TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "query_defect_stats": query_defect_stats,
     "group_defects_by_type": group_defects_by_type,
@@ -39,11 +49,7 @@ TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "get_top_ng_billets": get_top_ng_billets,
     "get_defect_images": get_defect_images,
     "generate_defect_report": generate_defect_report,
-    "retrieve_defect_knowledge": lambda query, top_k=3: {
-        "query": query,
-        "top_k": top_k,
-        "items": retrieve_knowledge(query=query, top_k=top_k),
-    },
+    "retrieve_defect_knowledge": retrieve_defect_knowledge_tool,
 }
 
 FILTER_SCHEMA = {

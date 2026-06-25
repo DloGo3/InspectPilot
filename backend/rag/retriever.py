@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -251,6 +252,82 @@ def _with_rank(
     if vector_error:
         item["vector_error"] = vector_error
     return item
+
+
+def _split_tags(raw_tags: Any) -> List[str]:
+    if isinstance(raw_tags, list):
+        return [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+    return [tag.strip() for tag in re.split(r"[,，;；\s]+", str(raw_tags or "")) if tag.strip()]
+
+
+def build_rag_trace(
+    query: str,
+    top_k: int,
+    items: List[Dict[str, Any]],
+    need_rag: Optional[bool] = None,
+    tool_name: str = "retrieve_defect_knowledge",
+    answer_mode: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a compact retrieval trace without changing retrieval ranking."""
+    doc_ids = [str(item.get("doc_id", "")) for item in items if item.get("doc_id")]
+    trace_hash = hashlib.sha1(f"{query}|{top_k}|{','.join(doc_ids)}".encode("utf-8")).hexdigest()[:8]
+    trace_id = f"rag_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{trace_hash}"
+
+    candidates: List[Dict[str, Any]] = []
+    categories: List[str] = []
+    tags: List[str] = []
+    sources: List[str] = []
+    scores: Dict[str, float] = {}
+    trace_warnings = list(warnings or [])
+
+    for item in items:
+        item_tags = _split_tags(item.get("tags", ""))
+        doc_id = item.get("doc_id")
+        score = item.get("score")
+        candidate = {
+            "rank": item.get("rank"),
+            "doc_id": doc_id,
+            "title": item.get("title"),
+            "score": score,
+            "retriever": item.get("retriever"),
+            "embedding_model": item.get("embedding_model"),
+            "category": item.get("category"),
+            "tags": item_tags,
+            "source": item.get("source"),
+        }
+        candidates.append(candidate)
+
+        if doc_id and isinstance(score, (int, float)):
+            scores[str(doc_id)] = round(float(score), 4)
+        if item.get("category") and item.get("category") not in categories:
+            categories.append(str(item.get("category")))
+        for tag in item_tags:
+            if tag not in tags:
+                tags.append(tag)
+        if item.get("source") and item.get("source") not in sources:
+            sources.append(str(item.get("source")))
+        if item.get("vector_error"):
+            trace_warnings.append(str(item.get("vector_error")))
+
+    top = candidates[0] if candidates else {}
+    return {
+        "trace_id": trace_id,
+        "original_query": query,
+        "retriever": top.get("retriever") or "none",
+        "embedding_model": top.get("embedding_model"),
+        "top_k": top_k,
+        "retrieved_candidates": candidates,
+        "selected_doc_ids": doc_ids,
+        "scores": scores,
+        "categories": categories,
+        "tags": tags,
+        "source": sources[0] if len(sources) == 1 else sources,
+        "need_rag": need_rag,
+        "tool_name": tool_name,
+        "answer_mode": answer_mode,
+        "warnings": trace_warnings,
+    }
 
 
 def _retrieve_with_faiss(query: str, top_k: int, model_name: str) -> List[Dict[str, Any]]:
