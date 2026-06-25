@@ -21,6 +21,8 @@ class ChatResponse(BaseModel):
     llm_used: bool = False
     llm_error: Optional[str] = None
     intent: str = "unknown"
+    need_rag: bool = False
+    kb_evidence: List[Dict[str, Any]] = Field(default_factory=list)
     tool_results: Dict[str, Any] = Field(default_factory=dict)
     report_path: Optional[str] = None
 

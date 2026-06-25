@@ -26,6 +26,8 @@ def init_database(db_path: Path = DEFAULT_DB_PATH, reset: bool = False) -> Path:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=OFF")
+        conn.execute("PRAGMA synchronous=OFF")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
 
         if reset:
@@ -92,4 +94,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     path = init_database(Path(args.db), reset=args.reset)
     print(f"SQLite database initialized: {path}")
-

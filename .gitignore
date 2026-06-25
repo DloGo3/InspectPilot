@@ -3,10 +3,16 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp_codex/
+pytest-cache-files-*/
 pytest_tmp*/
 backend/pytest_tmp*/
 backend/.env
 backend/data/defects.db
+backend/data/test_defects_*.db
+backend/data/*.db-journal
+backend/rag/faiss_index/
+sqlite_probe.db
 docs/reports/*.md
 frontend/node_modules/
 frontend/dist/

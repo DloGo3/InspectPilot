@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agent.graph import run_agent
 from data.init_db import DEFAULT_DB_PATH, init_database
+from rag.retriever import get_rag_status, retrieve_knowledge
 from schemas import ChatRequest, ChatResponse, ReportRequest
 from tools.defect_tools import (
     generate_defect_report,
@@ -19,7 +20,7 @@ from tools.defect_tools import (
 app = FastAPI(
     title="InspectPilot API",
     description="Industrial vision defect analysis Agent for billet surface inspection results.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -59,9 +60,21 @@ def agent_chat(payload: ChatRequest):
         llm_used=state.get("llm_used", False),
         llm_error=state.get("llm_error"),
         intent=state.get("intent", "unknown"),
+        need_rag=state.get("need_rag", False),
+        kb_evidence=state.get("kb_evidence", []),
         tool_results=state.get("tool_results", {}),
         report_path=state.get("report_path"),
     )
+
+
+@app.get("/api/rag/status")
+def rag_status():
+    return get_rag_status()
+
+
+@app.get("/api/rag/search")
+def rag_search(q: str = Query(..., min_length=1), top_k: int = Query(3, ge=1, le=10)):
+    return {"query": q, "top_k": top_k, "items": retrieve_knowledge(q, top_k=top_k)}
 
 
 @app.get("/api/defects/stats")

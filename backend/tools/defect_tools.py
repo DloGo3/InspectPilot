@@ -41,7 +41,11 @@ WIDTH_REGION_LABELS = {
 
 
 def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path or DEFAULT_DB_PATH)
+    path = Path(db_path or DEFAULT_DB_PATH)
+    if path.exists():
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)
+    else:
+        conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -581,4 +585,3 @@ def generate_defect_report(
             "top_ng_billet": top_billet,
         },
     }
-

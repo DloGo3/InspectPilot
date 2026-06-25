@@ -13,6 +13,7 @@ from tools.defect_tools import (
     query_defect_stats,
     query_defects_by_furnace,
 )
+from rag.retriever import retrieve_knowledge
 
 ALLOWED_FILTERS = {
     "defect_type",
@@ -38,6 +39,11 @@ TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "get_top_ng_billets": get_top_ng_billets,
     "get_defect_images": get_defect_images,
     "generate_defect_report": generate_defect_report,
+    "retrieve_defect_knowledge": lambda query, top_k=3: {
+        "query": query,
+        "top_k": top_k,
+        "items": retrieve_knowledge(query=query, top_k=top_k),
+    },
 }
 
 FILTER_SCHEMA = {
@@ -68,8 +74,8 @@ COMMON_PROPERTIES = {
 }
 
 
-def _schema(description: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    properties = dict(COMMON_PROPERTIES)
+def _schema(description: str, extra: Optional[Dict[str, Any]] = None, include_common: bool = True) -> Dict[str, Any]:
+    properties = dict(COMMON_PROPERTIES) if include_common else {}
     if extra:
         properties.update(extra)
     return {
@@ -97,10 +103,12 @@ _TOOL_DESCRIPTIONS = {
     "get_top_ng_billets": "Return top billets by NG rate. Use for NG率最高 or 方坯ID质量异常.",
     "get_defect_images": "Return image evidence paths for matching defect records.",
     "generate_defect_report": "Generate a Markdown defect statistics and spatial distribution report.",
+    "retrieve_defect_knowledge": "Retrieve defect-domain knowledge from the FAISS/BGE RAG knowledge base. Use for 原因、标准、等级、规则、判定、报告模板、复核建议 or defect explanations.",
 }
 
 for _name, _description in _TOOL_DESCRIPTIONS.items():
     extra_schema = None
+    include_common = True
     if _name == "query_defects_by_furnace":
         extra_schema = {
             "group_level": {"type": "string", "enum": ["furnace_no", "plan_no", "billet_id"]},
@@ -113,8 +121,17 @@ for _name, _description in _TOOL_DESCRIPTIONS.items():
         extra_schema = {
             "title": {"type": "string"},
         }
+    elif _name == "retrieve_defect_knowledge":
+        include_common = False
+        extra_schema = {
+            "query": {
+                "type": "string",
+                "description": "Original user question or concise retrieval query about defect knowledge.",
+            },
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+        }
 
-    tool_schema = _schema(_description, extra_schema)
+    tool_schema = _schema(_description, extra_schema, include_common=include_common)
     tool_schema["function"]["name"] = _name
     TOOL_DEFINITIONS.append(tool_schema)
 
@@ -192,6 +209,22 @@ def sanitize_filters(raw_filters: Any) -> Tuple[Dict[str, Any], List[str]]:
 
 def sanitize_tool_arguments(tool_name: str, raw_args: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
     warnings: List[str] = []
+
+    if tool_name == "retrieve_defect_knowledge":
+        query = str(raw_args.get("query") or "").strip()
+        if not query:
+            warnings.append("missing_rag_query")
+        top_k = raw_args.get("top_k", 3)
+        try:
+            top_k = int(top_k)
+        except (TypeError, ValueError):
+            top_k = 3
+        return (
+            {"query": query, "top_k": max(1, min(top_k, 10))},
+            {"preset": "knowledge_base", "start_time": None, "end_time": None},
+            warnings,
+        )
+
     start_time, end_time, time_window = resolve_time_window(raw_args)
     filters, filter_warnings = sanitize_filters(raw_args.get("filters", {}))
     warnings.extend(filter_warnings)
@@ -271,6 +304,8 @@ def result_has_data(tool_name: str, result: Dict[str, Any]) -> bool:
     if tool_name == "generate_defect_report":
         summary = result.get("summary", {})
         return any(summary.values())
+    if tool_name == "retrieve_defect_knowledge":
+        return bool(result.get("items"))
     return bool(result)
 
 
@@ -308,6 +343,15 @@ def summarize_result(tool_name: str, result: Dict[str, Any]) -> str:
         return f"返回 {len(result.get('items', []))} 条缺陷原图记录。"
     if tool_name == "generate_defect_report":
         return f"已生成报告：{result.get('report_path')}"
+    if tool_name == "retrieve_defect_knowledge":
+        items = result.get("items", [])
+        if not items:
+            return "未检索到相关知识片段。"
+        top = items[0]
+        return (
+            f"检索到 {len(items)} 条知识片段，Top1={top.get('title')}，"
+            f"检索器={top.get('retriever')}。"
+        )
     return "工具已返回结果。"
 
 
@@ -316,4 +360,3 @@ def compact_tool_results(tool_results: Dict[str, Any], max_chars: int = 12000) -
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "\n...<truncated>"
-

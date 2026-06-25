@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from agent.intent import extract_filters, infer_intent
+from agent.intent import extract_filters, infer_intent, should_use_rag
 from agent.llm_client import chat_completion, extract_json_object
 from agent.prompts import ANSWER_SYSTEM_PROMPT, TOOL_PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
@@ -28,7 +28,7 @@ GREETING_ANSWERS = {
     "default": "你好！我是 InspectPilot，可以帮你分析方坯表面缺陷检测结果。你可以问我：哪类缺陷最多、哪个表面缺陷最多、裂纹主要集中在哪里、哪个炉号/方坯 NG 率最高，或生成缺陷分析报告。",
 }
 
-HELP_ANSWER = "InspectPilot 支持方坯表面缺陷检测结果分析，包括缺陷类别统计、表面分布、头中尾/边部位置分析、炉号/计划号质量关注项、NG率排名和报告生成。"
+HELP_ANSWER = "InspectPilot 支持方坯表面缺陷检测结果分析，包括缺陷类别统计、表面分布、头中尾/边部位置分析、炉号/计划号质量关注项、NG率排名、缺陷知识解释和报告生成。"
 
 OUT_OF_SCOPE_ANSWER = "当前 InspectPilot 主要用于方坯表面缺陷检测结果分析，暂不支持该类问题。你可以询问缺陷类别、缺陷位置、炉号质量、方坯 NG 率或报告生成。"
 
@@ -58,6 +58,12 @@ DEFECT_ANALYSIS_KEYWORDS = [
     "报告",
     "统计",
     "质量",
+    "原因",
+    "标准",
+    "等级",
+    "规则",
+    "判定",
+    "复核",
 ]
 
 HELP_KEYWORDS = ["你能做什么", "支持哪些问题", "怎么使用", "如何使用", "帮助", "help", "功能"]
@@ -95,6 +101,28 @@ def _time_window_preset(question: str) -> str:
     return "all"
 
 
+def _rag_tool_call(question: str) -> Dict[str, Any]:
+    settings = get_settings()
+    return {
+        "name": "retrieve_defect_knowledge",
+        "arguments": {"query": question, "top_k": settings.rag_top_k},
+        "source": "auto_rag",
+    }
+
+
+def _ensure_rag_tool_call(question: str, planned: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    settings = get_settings()
+    for call in planned:
+        if call.get("name") == "retrieve_defect_knowledge":
+            arguments = call.setdefault("arguments", {})
+            if not arguments.get("query"):
+                arguments["query"] = question
+            if not arguments.get("top_k"):
+                arguments["top_k"] = settings.rag_top_k
+            return planned
+    return planned + [_rag_tool_call(question)]
+
+
 def _fallback_tool_plan(question: str) -> List[Dict[str, Any]]:
     intent = infer_intent(question)
     filters = extract_filters(question)
@@ -106,32 +134,40 @@ def _fallback_tool_plan(question: str) -> List[Dict[str, Any]]:
             payload.update(extra)
         return payload
 
+    def finalize(calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return _ensure_rag_tool_call(question, calls) if should_use_rag(question, intent) else calls
+
     if intent in {"general_stats", "recent_defects"}:
-        return [
+        return finalize([
             {"name": "query_defect_stats", "arguments": args()},
             {"name": "group_defects_by_type", "arguments": args()},
             {"name": "get_defect_images", "arguments": args({"limit": 5})},
-        ]
+        ])
     if intent == "group_by_type":
-        return [{"name": "group_defects_by_type", "arguments": args()}]
+        return finalize([{"name": "group_defects_by_type", "arguments": args()}])
     if intent == "group_by_face":
-        return [{"name": "group_defects_by_face", "arguments": args()}]
+        return finalize([{"name": "group_defects_by_face", "arguments": args()}])
     if intent == "group_by_position":
         calls = [{"name": "group_defects_by_position", "arguments": args()}]
         if filters.get("defect_type"):
             calls.append({"name": "group_defects_by_face", "arguments": args()})
-        return calls
+        return finalize(calls)
     if intent == "top_ng":
-        return [{"name": "get_top_ng_billets", "arguments": args({"limit": 10})}]
+        return finalize([{"name": "get_top_ng_billets", "arguments": args({"limit": 10})}])
     if intent == "furnace_quality":
-        return [{"name": "query_defects_by_furnace", "arguments": args({"group_level": "furnace_no"})}]
+        return finalize([{"name": "query_defects_by_furnace", "arguments": args({"group_level": "furnace_no"})}])
     if intent == "plan_quality":
-        return [{"name": "query_defects_by_furnace", "arguments": args({"group_level": "plan_no"})}]
+        return finalize([{"name": "query_defects_by_furnace", "arguments": args({"group_level": "plan_no"})}])
     if intent == "images":
-        return [{"name": "get_defect_images", "arguments": args({"limit": 20})}]
+        return finalize([{"name": "get_defect_images", "arguments": args({"limit": 20})}])
     if intent == "report":
-        return [{"name": "generate_defect_report", "arguments": args()}]
-    return [{"name": "query_defect_stats", "arguments": args()}]
+        calls = [{"name": "generate_defect_report", "arguments": args()}]
+        return finalize(calls)
+    if intent == "knowledge":
+        return [_rag_tool_call(question)]
+
+    calls = [{"name": "query_defect_stats", "arguments": args()}]
+    return finalize(calls)
 
 
 def classify_user_scope_node(state: AgentState) -> AgentState:
@@ -140,9 +176,11 @@ def classify_user_scope_node(state: AgentState) -> AgentState:
     state["scope"] = classified["scope"] or "out_of_scope"
     state["direct_answer"] = classified["direct_answer"]
     state["intent"] = infer_intent(question)
+    state["need_rag"] = state["scope"] == "defect_analysis" and should_use_rag(question, state["intent"])
     state["tool_results"] = {}
     state["tool_calls"] = []
     state["planned_tool_calls"] = []
+    state["kb_evidence"] = []
     state["evidence"] = []
     state["warnings"] = []
     state["errors"] = []
@@ -168,6 +206,7 @@ def direct_answer_node(state: AgentState) -> AgentState:
     state["tool_calls"] = []
     state["planned_tool_calls"] = []
     state["tool_results"] = {}
+    state["kb_evidence"] = []
     state["evidence"] = []
     state["warnings"] = []
     state["planner_mode"] = "none"
@@ -242,6 +281,8 @@ def plan_tool_calls_node(state: AgentState) -> AgentState:
         else:
             state["planner_mode"] = "llm"
             state["llm_used"] = True
+        if state.get("need_rag"):
+            planned = _ensure_rag_tool_call(question, planned)
         state["planned_tool_calls"] = planned
     except Exception as exc:
         state["planned_tool_calls"] = _fallback_tool_plan(question)
@@ -261,6 +302,10 @@ def _merge_filters(current: Dict[str, Any], new_filters: Dict[str, Any]) -> Dict
 
 
 def _choose_time_window(current: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+    if candidate and candidate.get("preset") == "knowledge_base":
+        return current or candidate
+    if current and current.get("preset") == "knowledge_base":
+        return candidate or current
     if not current or current.get("preset") == "all":
         return candidate
     if candidate and candidate.get("preset") != "all":
@@ -272,6 +317,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
     tool_results: Dict[str, Any] = {}
     tool_calls: List[Dict[str, Any]] = []
     evidence: List[Dict[str, Any]] = []
+    kb_evidence: List[Dict[str, Any]] = []
     warnings = list(state.get("warnings", []))
     filters = dict(state.get("filters", {}))
     time_window = dict(state.get("time_window", {}))
@@ -295,6 +341,8 @@ def execute_tools_node(state: AgentState) -> AgentState:
 
         has_data = execution.get("ok", False) and result_has_data(name, result)
         summary = summarize_result(name, result) if execution.get("ok") else "工具调用失败。"
+        if name == "retrieve_defect_knowledge" and result.get("items"):
+            kb_evidence.extend(result.get("items", []))
         tool_calls.append(
             {
                 "name": name,
@@ -309,7 +357,11 @@ def execute_tools_node(state: AgentState) -> AgentState:
                 {
                     "tool": name,
                     "summary": summary,
-                    "data_source": "backend.tools.defect_tools deterministic result",
+                    "data_source": (
+                        "backend.rag.knowledge_base.md via FAISS/BGE or keyword fallback"
+                        if name == "retrieve_defect_knowledge"
+                        else "backend.tools.defect_tools deterministic result"
+                    ),
                     "time_window": execution.get("time_window", {}),
                     "filters": execution.get("filters", {}),
                 }
@@ -319,6 +371,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
 
     state["tool_results"] = tool_results
     state["tool_calls"] = tool_calls
+    state["kb_evidence"] = kb_evidence
     state["evidence"] = evidence
     state["warnings"] = warnings
     state["filters"] = filters
@@ -332,16 +385,29 @@ def _deterministic_answer(state: AgentState) -> str:
     if not state.get("evidence"):
         return "当前数据不足以判断"
 
-    lines = [
-        (
+    stats_evidence = [item for item in state.get("evidence", []) if item.get("tool") != "retrieve_defect_knowledge"]
+    kb_evidence = state.get("kb_evidence", [])
+    lines: List[str] = []
+
+    if stats_evidence:
+        lines.append(
             f"分析口径：时间窗 {state.get('time_window', {}).get('start_time') or '不限'} "
             f"至 {state.get('time_window', {}).get('end_time') or '不限'}；"
             f"过滤条件 {state.get('filters') or '无'}；默认排除已标记误检的记录。"
         )
-    ]
-    for item in state.get("evidence", []):
+
+    for item in stats_evidence:
         lines.append(f"- {item['summary']}")
-    lines.append("证据来源：确定性 defect_tools 工具返回结果；质量闭环仍需结合人工复核和现场工艺记录。")
+
+    if kb_evidence:
+        lines.append("知识库解释：")
+        for item in kb_evidence[:3]:
+            lines.append(f"- {item.get('title')}：{item.get('content')}")
+
+    if stats_evidence:
+        lines.append("证据来源：确定性 defect_tools 工具返回结果；质量闭环仍需结合人工复核和现场工艺记录。")
+    if kb_evidence:
+        lines.append("知识来源：backend/rag/knowledge_base.md；知识解释用于辅助复核，不直接等同于当前批次的确定原因。")
     return "\n".join(lines)
 
 
@@ -372,6 +438,7 @@ def generate_answer_node(state: AgentState) -> AgentState:
                 f"time_window：{state.get('time_window')}\n"
                 f"filters：{state.get('filters')}\n"
                 f"evidence：{state.get('evidence')}\n"
+                f"kb_evidence：{state.get('kb_evidence', [])}\n"
                 f"tool_results：{compact_tool_results(state.get('tool_results', {}))}\n"
                 "请输出 JSON：{\"answer\":\"...\",\"warnings\":[\"...\"]}"
             ),

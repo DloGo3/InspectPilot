@@ -6,3 +6,5 @@
 {"id":"greeting_no_tool","question":"晚上好","expected_tools":[],"must_contain":["晚上好","InspectPilot"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}
 {"id":"help_no_tool","question":"你能做什么？","expected_tools":[],"must_contain":["缺陷","表面","报告"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}
 {"id":"out_of_scope_no_tool","question":"帮我推荐晚饭","expected_tools":[],"must_contain":["暂不支持","方坯表面缺陷"],"must_not_contain":["裂纹最多","有效缺陷"],"expect_insufficient":false}
+{"id":"rag_crack_explain","question":"裂纹为什么需要重点关注？","expected_tools":["retrieve_defect_knowledge"],"must_contain":["裂纹缺陷说明","高风险","复核"],"must_not_contain":["当前数据不足以判断"],"expect_insufficient":false}
+{"id":"rag_severity_rule","question":"缺陷等级规则是什么？","expected_tools":["retrieve_defect_knowledge"],"must_contain":["缺陷等级规则","critical","major","minor"],"must_not_contain":["当前数据不足以判断"],"expect_insufficient":false}

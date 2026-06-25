@@ -7,24 +7,74 @@
       <button :disabled="loading" @click="ask">
         {{ loading ? "分析中..." : "开始分析" }}
       </button>
-      <pre v-if="answer">{{ answer }}</pre>
+      <section v-if="response" class="result">
+        <div class="answer">{{ response.answer || "后端没有返回分析结果。" }}</div>
+
+        <div class="meta-row">
+          <span class="badge" :class="{ active: response.need_rag }">
+            RAG：{{ response.need_rag ? "已触发" : "未触发" }}
+          </span>
+          <span class="badge">planner：{{ response.planner_mode || "-" }}</span>
+          <span class="badge">answer：{{ response.answer_mode || "-" }}</span>
+          <span class="badge">LLM：{{ response.llm_used ? "是" : "否" }}</span>
+        </div>
+
+        <section v-if="knowledgeEvidence.length" class="evidence-section">
+          <h2>参考知识</h2>
+          <ol class="evidence-list">
+            <li v-for="item in knowledgeEvidence" :key="item.doc_id || item.rank">
+              <div class="evidence-title">
+                <strong>{{ item.title || item.doc_id }}</strong>
+                <span>score={{ formatScore(item.score) }}</span>
+              </div>
+              <div class="evidence-meta">
+                <span>{{ item.source || "knowledge_base.md" }}</span>
+                <span>{{ item.retriever || "-" }}</span>
+                <span>{{ item.embedding_model || "-" }}</span>
+              </div>
+              <p>{{ item.content }}</p>
+            </li>
+          </ol>
+        </section>
+
+        <section v-if="toolCalls.length" class="evidence-section">
+          <h2>工具调用</h2>
+          <ul class="tool-list">
+            <li v-for="(tool, index) in toolCalls" :key="`${tool.name}-${index}`">
+              <strong>{{ tool.name }}</strong>
+              <span>{{ tool.ok ? "ok" : "failed" }}</span>
+              <span v-if="tool.summary">{{ tool.summary }}</span>
+            </li>
+          </ul>
+        </section>
+      </section>
       <p v-if="error" class="error">{{ error }}</p>
     </section>
   </main>
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
 const question = ref("最近一小时检测出了哪些缺陷？哪类最多？");
-const answer = ref("");
+const response = ref(null);
 const error = ref("");
 const loading = ref(false);
 const apiBase = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 
+const knowledgeEvidence = computed(() => response.value?.kb_evidence || []);
+const toolCalls = computed(() => response.value?.tool_calls || []);
+
+function formatScore(score) {
+  if (typeof score !== "number") {
+    return "-";
+  }
+  return score.toFixed(4);
+}
+
 async function ask() {
   loading.value = true;
-  answer.value = "";
+  response.value = null;
   error.value = "";
 
   try {
@@ -39,7 +89,7 @@ async function ask() {
     }
 
     const data = await res.json();
-    answer.value = data.answer || "后端没有返回分析结果。";
+    response.value = data;
   } catch (err) {
     error.value = `请求失败：${err.message}`;
   } finally {
@@ -100,8 +150,11 @@ button:disabled {
   cursor: wait;
 }
 
-pre {
+.result {
   margin-top: 18px;
+}
+
+.answer {
   white-space: pre-wrap;
   line-height: 1.6;
   background: #102a43;
@@ -110,9 +163,106 @@ pre {
   border-radius: 6px;
 }
 
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 4px;
+  background: #edf2f7;
+  color: #334e68;
+  font-size: 13px;
+}
+
+.badge.active {
+  background: #d9f2e6;
+  color: #0b6b47;
+}
+
+.evidence-section {
+  margin-top: 18px;
+  border-top: 1px solid #d9e2ec;
+  padding-top: 16px;
+}
+
+.evidence-section h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.evidence-list li {
+  padding: 0 0 12px;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.evidence-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.evidence-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  color: #102a43;
+}
+
+.evidence-title span,
+.evidence-meta {
+  color: #627d98;
+  font-size: 13px;
+}
+
+.evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.evidence-list p {
+  margin: 8px 0 0;
+  line-height: 1.6;
+  color: #243b53;
+}
+
+.tool-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #334e68;
+}
+
+.tool-list span {
+  color: #627d98;
+}
+
 .error {
   margin-top: 14px;
   color: #b42318;
 }
 </style>
-
