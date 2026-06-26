@@ -50,6 +50,48 @@ DOMAIN_TERMS = [
     "NG",
 ]
 
+DEFECT_TYPE_ALIASES = {
+    "裂纹": ["裂纹", "裂缝", "开裂"],
+    "划伤": ["划伤", "刮伤", "擦伤"],
+    "结疤": ["结疤", "疤痕", "结疤缺陷"],
+    "氧化皮": ["氧化皮", "氧化", "氧化铁皮"],
+    "凹坑": ["凹坑", "坑", "点坑"],
+    "夹渣": ["夹渣", "渣", "夹杂"],
+    "麻点": ["麻点", "麻面", "点状"],
+    "压痕": ["压痕", "压印", "压伤"],
+}
+
+INTENT_KEYWORDS = {
+    "explain": ["说明", "解释", "是什么", "为什么", "重点关注", "关注"],
+    "root_cause": ["原因", "为什么", "导致", "可能", "有关", "排查", "检查"],
+    "uncertain_cause": ["一定", "必然", "确认", "导致的吗", "是不是", "能否判定"],
+    "severity": ["等级", "严重", "critical", "major", "minor", "高风险"],
+    "standard": ["标准", "判定", "规则", "依据"],
+    "review": ["复核", "闭环", "人工", "确认", "优先"],
+    "false_positive": ["误检", "阈值", "反光", "照明"],
+    "spatial": ["集中", "位置", "头部", "中部", "尾部", "边部", "中心", "空间", "分布"],
+    "report": ["报告", "模板"],
+    "answer_style": ["回答规范", "注意什么", "不要", "凭空", "审慎"],
+    "quality": ["质量", "异常", "炉号", "计划号", "方坯", "NG"],
+}
+
+INTENT_CATEGORY_BOOSTS = {
+    "explain": {"defect_type"},
+    "root_cause": {"root_cause", "defect_type", "review", "answer_rule"},
+    "uncertain_cause": {"answer_rule", "root_cause", "review", "defect_type"},
+    "severity": {"severity", "review", "answer_rule", "root_cause"},
+    "standard": {"standard", "severity", "spatial_rule", "answer_rule"},
+    "review": {"review", "root_cause", "answer_rule", "severity"},
+    "false_positive": {"defect_type", "review", "answer_rule"},
+    "spatial": {"spatial_rule", "standard", "root_cause"},
+    "report": {"report_template", "standard", "spatial_rule", "answer_rule"},
+    "answer_style": {"answer_rule", "root_cause", "review"},
+    "quality": {"standard", "review", "root_cause", "report_template"},
+}
+
+DEFAULT_EVIDENCE_BUDGET_CHARS = 1800
+DEFAULT_EVIDENCE_BUDGET_MAX_ITEMS = 3
+
 _MODEL_CACHE: Dict[str, Any] = {}
 
 
@@ -57,7 +99,7 @@ def _embedding_model_name(model_name: Optional[str] = None) -> str:
     return model_name or os.getenv("EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL)
 
 
-def _load_chunks(kb_path: Path = KB_PATH) -> List[Dict[str, str]]:
+def _load_chunks(kb_path: Path = KB_PATH) -> List[Dict[str, Any]]:
     raw = kb_path.read_text(encoding="utf-8")
     sections: List[str] = []
     current: List[str] = []
@@ -71,7 +113,7 @@ def _load_chunks(kb_path: Path = KB_PATH) -> List[Dict[str, str]]:
     if current:
         sections.append("\n".join(current).strip())
 
-    chunks: List[Dict[str, str]] = []
+    chunks: List[Dict[str, Any]] = []
     for section in sections:
         if "\n---\n" not in section:
             continue
@@ -84,31 +126,37 @@ def _load_chunks(kb_path: Path = KB_PATH) -> List[Dict[str, str]]:
         doc_id = meta.get("id", "").strip()
         content = body.strip()
         if doc_id and content:
-            chunks.append(
-                {
-                    "doc_id": doc_id,
-                    "title": meta.get("title", "").strip(),
-                    "category": meta.get("category", "").strip(),
-                    "tags": meta.get("tags", "").strip(),
-                    "content": content,
-                    "source": kb_path.name,
-                }
-            )
+            chunk = {
+                "doc_id": doc_id,
+                "title": meta.get("title", "").strip(),
+                "category": meta.get("category", "").strip(),
+                "tags": meta.get("tags", "").strip(),
+                "content": content,
+                "source": kb_path.name,
+            }
+            for key, value in meta.items():
+                if key != "id" and key not in chunk:
+                    chunk[key] = value.strip()
+            chunks.append(chunk)
     return chunks
 
 
-def _chunk_text(chunk: Dict[str, str]) -> str:
+def _chunk_text(chunk: Dict[str, Any]) -> str:
     return "\n".join(
         [
             f"标题：{chunk.get('title', '')}",
             f"类别：{chunk.get('category', '')}",
             f"标签：{chunk.get('tags', '')}",
+            f"缺陷类型：{chunk.get('defect_types', '')}",
+            f"适用意图：{chunk.get('applicable_intents', '')}",
+            f"证据类型：{chunk.get('evidence_type', '')}",
+            f"风险等级：{chunk.get('risk_level', '')}",
             f"内容：{chunk.get('content', '')}",
         ]
     )
 
 
-def _fingerprint(chunks: List[Dict[str, str]], model_name: str) -> str:
+def _fingerprint(chunks: List[Dict[str, Any]], model_name: str) -> str:
     payload = {"model_name": model_name, "chunks": chunks}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -144,7 +192,7 @@ def _get_model(model_name: str) -> Any:
     raise RuntimeError("embedding_model_load_failed:" + " | ".join(errors))
 
 
-def _load_faiss_index(chunks: List[Dict[str, str]], model_name: str) -> Optional[Tuple[Any, List[Dict[str, str]]]]:
+def _load_faiss_index(chunks: List[Dict[str, Any]], model_name: str) -> Optional[Tuple[Any, List[Dict[str, Any]]]]:
     if not INDEX_PATH.exists() or not METADATA_PATH.exists():
         return None
 
@@ -234,7 +282,7 @@ def build_faiss_index(force_rebuild: bool = False, model_name: Optional[str] = N
 
 
 def _with_rank(
-    chunk: Dict[str, str],
+    chunk: Dict[str, Any],
     rank: int,
     score: float,
     retriever: str,
@@ -244,9 +292,19 @@ def _with_rank(
     item: Dict[str, Any] = {
         **chunk,
         "rank": rank,
+        "raw_rank": rank,
         "score": round(float(score), 4),
         "retriever": retriever,
+        "metadata_score": 0.0,
+        "rerank_score": round(float(score), 4),
+        "rerank_reason": [],
     }
+    if retriever == "faiss_bge":
+        item["dense_rank"] = rank
+        item["dense_score"] = round(float(score), 4)
+    if retriever == "keyword_fallback":
+        item["keyword_rank"] = rank
+        item["keyword_score"] = round(float(score), 4)
     if model_name:
         item["embedding_model"] = model_name
     if vector_error:
@@ -260,6 +318,200 @@ def _split_tags(raw_tags: Any) -> List[str]:
     return [tag.strip() for tag in re.split(r"[,，;；\s]+", str(raw_tags or "")) if tag.strip()]
 
 
+def _contains_any(text: str, keywords: List[str]) -> bool:
+    text_lower = text.lower()
+    return any(keyword.lower() in text_lower for keyword in keywords)
+
+
+def analyze_rag_query(query: str) -> Dict[str, Any]:
+    """Extract deterministic retrieval hints for business reranking."""
+    defect_types: List[str] = []
+    for defect_type, aliases in DEFECT_TYPE_ALIASES.items():
+        if _contains_any(query, aliases):
+            defect_types.append(defect_type)
+
+    intents: List[str] = []
+    for intent, keywords in INTENT_KEYWORDS.items():
+        if _contains_any(query, keywords):
+            intents.append(intent)
+    if not intents and defect_types:
+        intents.append("explain")
+
+    target_categories: List[str] = []
+    for intent in intents:
+        for category in INTENT_CATEGORY_BOOSTS.get(intent, set()):
+            if category not in target_categories:
+                target_categories.append(category)
+    if not defect_types:
+        target_categories = [category for category in target_categories if category != "defect_type"]
+
+    return {
+        "defect_types": defect_types,
+        "intents": intents,
+        "target_categories": target_categories,
+    }
+
+
+def _chunk_metadata_values(chunk: Dict[str, Any], key: str) -> List[str]:
+    return _split_tags(chunk.get(key, ""))
+
+
+def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) -> Tuple[float, List[str]]:
+    score = 0.0
+    reasons: List[str] = []
+    query_defects = query_profile.get("defect_types", [])
+    query_intents = query_profile.get("intents", [])
+    target_categories = set(query_profile.get("target_categories", []))
+    chunk_defects = _chunk_metadata_values(chunk, "defect_types")
+    chunk_intents = _chunk_metadata_values(chunk, "applicable_intents")
+    chunk_related = _chunk_metadata_values(chunk, "related_doc_ids")
+    category = str(chunk.get("category") or "")
+    doc_id = str(chunk.get("doc_id") or "")
+    tags = set(_split_tags(chunk.get("tags", "")))
+
+    if query_defects:
+        if any(defect in chunk_defects for defect in query_defects):
+            if category == "defect_type" or len(chunk_defects) == 1:
+                score += 0.38
+                reasons.append("缺陷类型匹配")
+            else:
+                score += 0.12
+                reasons.append("通用规则覆盖该缺陷类型")
+        elif "all" in chunk_defects:
+            score += 0.08
+            reasons.append("通用缺陷知识")
+        elif category == "defect_type":
+            score -= 0.55
+            reasons.append("缺陷类型不匹配")
+
+    if category in target_categories:
+        score += 0.22
+        reasons.append("知识类别匹配")
+
+    broad_rule_intents = {"severity", "standard", "review", "answer_style", "report", "root_cause"}
+    if not query_defects and category == "defect_type" and any(intent in query_intents for intent in broad_rule_intents):
+        score -= 0.28
+        reasons.append("未指定缺陷类型，降低单缺陷说明优先级")
+
+    matched_intents = [intent for intent in query_intents if intent in chunk_intents]
+    if matched_intents:
+        intent_score = min(0.24, 0.08 * len(matched_intents))
+        score += intent_score
+        reasons.append("问题意图匹配:" + ",".join(matched_intents[:3]))
+
+    if query_defects and any(defect in tags for defect in query_defects):
+        score += 0.08
+        reasons.append("标签命中缺陷类型")
+
+    if query_defects and any(related.startswith("defect_type_") for related in chunk_related):
+        score += 0.04
+        reasons.append("关联缺陷知识")
+
+    if "uncertain_cause" in query_intents and chunk.get("evidence_type") in {"answer_rule", "root_cause_checklist"}:
+        score += 0.18
+        reasons.append("因果不确定性防护")
+
+    if "root_cause" in query_intents and chunk.get("evidence_type") == "root_cause_checklist":
+        score += 0.18
+        reasons.append("原因排查清单优先")
+
+    if "review" in query_intents and chunk.get("evidence_type") == "review_loop":
+        score += 0.16
+        reasons.append("复核闭环优先")
+
+    if "severity" in query_intents and chunk.get("evidence_type") == "severity_rule":
+        score += 0.18
+        reasons.append("等级规则优先")
+
+    if "report" in query_intents and chunk.get("evidence_type") == "report_template":
+        score += 0.18
+        reasons.append("报告模板优先")
+
+    if "spatial" in query_intents and chunk.get("evidence_type") == "spatial_rule":
+        score += 0.16
+        reasons.append("空间解释优先")
+
+    if doc_id in {"response_style_rule", "review_loop_standard"} and "root_cause" in query_intents:
+        score += 0.04
+        reasons.append("原因回答审慎约束")
+
+    return round(score, 4), reasons
+
+
+def _evidence_budget_chars() -> int:
+    raw_value = os.getenv("RAG_EVIDENCE_BUDGET_CHARS")
+    try:
+        value = int(raw_value) if raw_value else DEFAULT_EVIDENCE_BUDGET_CHARS
+    except ValueError:
+        value = DEFAULT_EVIDENCE_BUDGET_CHARS
+    return max(400, min(value, 8000))
+
+
+def _evidence_budget_max_items() -> int:
+    raw_value = os.getenv("RAG_EVIDENCE_BUDGET_MAX_ITEMS")
+    try:
+        value = int(raw_value) if raw_value else DEFAULT_EVIDENCE_BUDGET_MAX_ITEMS
+    except ValueError:
+        value = DEFAULT_EVIDENCE_BUDGET_MAX_ITEMS
+    return max(1, min(value, 10))
+
+
+def _apply_evidence_budget(items: List[Dict[str, Any]], max_chars: Optional[int] = None) -> List[Dict[str, Any]]:
+    max_chars = max_chars or _evidence_budget_chars()
+    max_items = _evidence_budget_max_items()
+    used_chars = 0
+    output: List[Dict[str, Any]] = []
+    for final_rank, item in enumerate(items, start=1):
+        updated = dict(item)
+        content_chars = len(str(updated.get("title", ""))) + len(str(updated.get("content", "")))
+        must_keep_first = final_rank == 1
+        include = must_keep_first or (final_rank <= max_items and used_chars + content_chars <= max_chars)
+        if include:
+            used_chars += content_chars
+            budget_reason = "included"
+        elif final_rank > max_items:
+            budget_reason = "over_item_budget"
+        else:
+            budget_reason = "over_budget"
+        updated["rank"] = final_rank
+        updated["final_rank"] = final_rank
+        updated["included_in_answer_context"] = include
+        updated["evidence_budget"] = {
+            "max_chars": max_chars,
+            "max_items": max_items,
+            "content_chars": content_chars,
+            "used_chars": used_chars,
+            "reason": budget_reason,
+        }
+        output.append(updated)
+    return output
+
+
+def _rerank_results(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+    query_profile = analyze_rag_query(query)
+    ranked: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        base_score = float(item.get("dense_score", item.get("keyword_score", item.get("score", 0.0))) or 0.0)
+        metadata_score, reasons = _metadata_match_score(query_profile, item)
+        rerank_score = base_score + metadata_score
+        item["query_profile"] = query_profile
+        item["metadata_score"] = round(metadata_score, 4)
+        item["rerank_score"] = round(rerank_score, 4)
+        item["score"] = round(rerank_score, 4)
+        item["rerank_reason"] = reasons or ["向量相似度排序"]
+        ranked.append(item)
+
+    ranked.sort(
+        key=lambda item: (
+            float(item.get("rerank_score", 0.0)),
+            float(item.get("dense_score", item.get("keyword_score", 0.0))),
+        ),
+        reverse=True,
+    )
+    return _apply_evidence_budget(ranked[:top_k])
+
+
 def build_rag_trace(
     query: str,
     top_k: int,
@@ -269,10 +521,11 @@ def build_rag_trace(
     answer_mode: Optional[str] = None,
     warnings: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Build a compact retrieval trace without changing retrieval ranking."""
+    """Build a compact retrieval trace for recall, rerank, and evidence-budget debugging."""
     doc_ids = [str(item.get("doc_id", "")) for item in items if item.get("doc_id")]
     trace_hash = hashlib.sha1(f"{query}|{top_k}|{','.join(doc_ids)}".encode("utf-8")).hexdigest()[:8]
     trace_id = f"rag_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{trace_hash}"
+    query_profile = analyze_rag_query(query)
 
     candidates: List[Dict[str, Any]] = []
     categories: List[str] = []
@@ -287,13 +540,26 @@ def build_rag_trace(
         score = item.get("score")
         candidate = {
             "rank": item.get("rank"),
+            "raw_rank": item.get("raw_rank"),
+            "dense_rank": item.get("dense_rank"),
             "doc_id": doc_id,
             "title": item.get("title"),
             "score": score,
+            "dense_score": item.get("dense_score"),
+            "keyword_score": item.get("keyword_score"),
+            "metadata_score": item.get("metadata_score"),
+            "rerank_score": item.get("rerank_score"),
+            "rerank_reason": item.get("rerank_reason", []),
+            "included_in_answer_context": item.get("included_in_answer_context", True),
+            "evidence_budget": item.get("evidence_budget", {}),
             "retriever": item.get("retriever"),
             "embedding_model": item.get("embedding_model"),
             "category": item.get("category"),
             "tags": item_tags,
+            "defect_types": _chunk_metadata_values(item, "defect_types"),
+            "applicable_intents": _chunk_metadata_values(item, "applicable_intents"),
+            "evidence_type": item.get("evidence_type"),
+            "risk_level": item.get("risk_level"),
             "source": item.get("source"),
         }
         candidates.append(candidate)
@@ -323,6 +589,21 @@ def build_rag_trace(
         "categories": categories,
         "tags": tags,
         "source": sources[0] if len(sources) == 1 else sources,
+        "query_profile": query_profile,
+        "evidence_budget": {
+            "max_chars": _evidence_budget_chars(),
+            "max_items": _evidence_budget_max_items(),
+            "included_doc_ids": [
+                str(item.get("doc_id"))
+                for item in items
+                if item.get("doc_id") and item.get("included_in_answer_context", True)
+            ],
+            "omitted_doc_ids": [
+                str(item.get("doc_id"))
+                for item in items
+                if item.get("doc_id") and not item.get("included_in_answer_context", True)
+            ],
+        },
         "need_rag": need_rag,
         "tool_name": tool_name,
         "answer_mode": answer_mode,
@@ -385,7 +666,7 @@ def _query_terms(query: str) -> List[str]:
     return terms
 
 
-def _keyword_score(query: str, chunk: Dict[str, str]) -> float:
+def _keyword_score(query: str, chunk: Dict[str, Any]) -> float:
     terms = _query_terms(query)
     if not terms:
         return 0.0
@@ -424,6 +705,11 @@ def _retrieve_with_keywords(query: str, top_k: int, vector_error: Optional[str] 
     ]
 
 
+def _candidate_pool_size(top_k: int) -> int:
+    chunk_count = len(_load_chunks())
+    return max(top_k, min(chunk_count, max(12, top_k * 4)))
+
+
 def retrieve_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieve defect-domain knowledge. FAISS+BGE is used when available; keyword fallback keeps demos offline."""
     query = (query or "").strip()
@@ -432,15 +718,18 @@ def retrieve_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = N
 
     top_k = max(1, min(int(top_k or 3), 10))
     model_name = _embedding_model_name(model_name)
+    candidate_k = _candidate_pool_size(top_k)
 
     try:
-        results = _retrieve_with_faiss(query, top_k, model_name)
+        results = _retrieve_with_faiss(query, candidate_k, model_name)
         if results:
-            return results
+            return _rerank_results(query, results, top_k)
     except Exception as exc:
-        return _retrieve_with_keywords(query, top_k, vector_error=str(exc))
+        results = _retrieve_with_keywords(query, candidate_k, vector_error=str(exc))
+        return _rerank_results(query, results, top_k)
 
-    return _retrieve_with_keywords(query, top_k)
+    results = _retrieve_with_keywords(query, candidate_k)
+    return _rerank_results(query, results, top_k)
 
 
 def get_rag_status() -> Dict[str, Any]:

@@ -25,6 +25,14 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - `eval_runner.py` 支持 RAG 专用检查：`expected_need_rag`、`must_not_tools`、`expected_top_doc_ids`、`expected_any_doc_ids`、`expected_relevant_doc_ids`
 - eval 输出 RAG 指标：`recall@K`、`mrr`、`irrelevant_rate`，用于后续 query rewrite、hybrid retrieval、rerank 的量化对比
 
+## v0.3.2 Knowledge Metadata + Business Rerank + Evidence Budget
+
+- 知识库 chunk 增加业务元数据：`defect_types`、`risk_level`、`applicable_intents`、`evidence_type`、`related_doc_ids`、`status`、`version`、`updated_at`
+- RAG 检索从“直接返回向量 TopK”升级为“两阶段排序”：先用 FAISS/BGE 扩大候选召回，再根据缺陷类型、问题意图和知识类别做业务重排
+- `kb_evidence` 和 `rag_trace` 新增 `dense_score`、`metadata_score`、`rerank_score`、`rerank_reason`、`included_in_answer_context`、`evidence_budget`
+- Evidence Budget 通过 `RAG_EVIDENCE_BUDGET_CHARS` 和 `RAG_EVIDENCE_BUDGET_MAX_ITEMS` 控制进入答案生成上下文的知识片段，前端仍展示完整 TopK 证据，避免 LLM 被弱相关证据淹没
+- 前端参考知识区展示重排依据，便于演示“Agent 基于可追溯知识片段回答，而不是凭空解释”
+
 ## 启动后端
 
 ```powershell
@@ -51,6 +59,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 MODEL_NAME=gpt-4o-mini
 EMBEDDING_MODEL_NAME=BAAI/bge-small-zh-v1.5
 RAG_TOP_K=3
+RAG_EVIDENCE_BUDGET_CHARS=1800
+RAG_EVIDENCE_BUDGET_MAX_ITEMS=3
 ```
 
 如果暂时不配置 `.env`，后端会使用离线 fallback planner，并在 `warnings` 中说明，方便本地演示不断流。

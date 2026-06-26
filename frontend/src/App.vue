@@ -25,12 +25,18 @@
             <li v-for="item in knowledgeEvidence" :key="item.doc_id || item.rank">
               <div class="evidence-title">
                 <strong>{{ item.title || item.doc_id }}</strong>
-                <span>score={{ formatScore(item.score) }}</span>
+                <span>rerank={{ formatScore(item.rerank_score ?? item.score) }}</span>
               </div>
               <div class="evidence-meta">
                 <span>{{ item.source || "knowledge_base.md" }}</span>
                 <span>{{ item.retriever || "-" }}</span>
                 <span>{{ item.embedding_model || "-" }}</span>
+                <span>dense={{ formatScore(item.dense_score ?? item.keyword_score) }}</span>
+                <span>metadata={{ formatScore(item.metadata_score) }}</span>
+                <span>{{ item.included_in_answer_context === false ? "预算外" : "进入回答" }}</span>
+              </div>
+              <div v-if="item.rerank_reason?.length" class="reason">
+                {{ item.rerank_reason.join("；") }}
               </div>
               <p>{{ item.content }}</p>
             </li>
@@ -50,6 +56,8 @@
                 <span>answer={{ trace.answer_mode || "-" }}</span>
                 <span>model={{ trace.embedding_model || "-" }}</span>
                 <span>docs={{ (trace.selected_doc_ids || []).join(", ") }}</span>
+                <span>included={{ trace.evidence_budget?.included_doc_ids?.join(", ") || "-" }}</span>
+                <span>omitted={{ trace.evidence_budget?.omitted_doc_ids?.join(", ") || "-" }}</span>
               </div>
             </li>
           </ul>
@@ -252,6 +260,12 @@ button:disabled {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 4px;
+}
+
+.reason {
+  margin-top: 6px;
+  color: #486581;
+  font-size: 13px;
 }
 
 .evidence-list p {

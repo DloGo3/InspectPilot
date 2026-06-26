@@ -39,6 +39,14 @@ def _kb_doc_ids(state: Dict[str, Any]) -> List[str]:
     return [item.get("doc_id") for item in state.get("kb_evidence", []) if item.get("doc_id")]
 
 
+def _kb_context_doc_ids(state: Dict[str, Any]) -> List[str]:
+    return [
+        item.get("doc_id")
+        for item in state.get("kb_evidence", [])
+        if item.get("doc_id") and item.get("included_in_answer_context", True)
+    ]
+
+
 def _rag_top_k(state: Dict[str, Any], doc_ids: List[str]) -> int:
     traces = state.get("rag_trace", [])
     if traces and traces[0].get("top_k"):
@@ -86,6 +94,7 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     llm_used = bool(state.get("llm_used", False))
     need_rag = bool(state.get("need_rag", False))
     doc_ids = _kb_doc_ids(state)
+    context_doc_ids = _kb_context_doc_ids(state)
     top_doc_id = doc_ids[0] if doc_ids else None
 
     expected_tools = case.get("expected_tools", [])
@@ -114,6 +123,8 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     recall_at_k = _recall_at_k(doc_ids, relevant_doc_ids)
     mrr = _reciprocal_rank(doc_ids, relevant_doc_ids)
     irrelevant_rate = _irrelevant_rate(doc_ids, relevant_doc_ids)
+    context_recall_at_k = _recall_at_k(context_doc_ids, relevant_doc_ids)
+    context_irrelevant_rate = _irrelevant_rate(context_doc_ids, relevant_doc_ids)
 
     insufficient_ok = True
     if case.get("expect_insufficient"):
@@ -149,10 +160,13 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         "rag_top_k": _rag_top_k(state, doc_ids),
         "top_doc_id": top_doc_id,
         "kb_doc_ids": doc_ids,
+        "kb_context_doc_ids": context_doc_ids,
         "rag_trace": state.get("rag_trace", []),
         "recall_at_k": recall_at_k,
         "mrr": mrr,
         "irrelevant_rate": irrelevant_rate,
+        "context_recall_at_k": context_recall_at_k,
+        "context_irrelevant_rate": context_irrelevant_rate,
         "missing_tools": missing_tools,
         "unexpected_tools": unexpected_tools,
         "forbidden_tools": forbidden_tools,
@@ -193,7 +207,8 @@ def main() -> int:
             f"need_rag={result.get('need_rag')} top1={result.get('top_doc_id') or '-'} "
             f"recall@{result.get('rag_top_k')}={_metric(result.get('recall_at_k'))} "
             f"mrr={_metric(result.get('mrr'))} "
-            f"irrelevant_rate={_metric(result.get('irrelevant_rate'))}"
+            f"irrelevant_rate={_metric(result.get('irrelevant_rate'))} "
+            f"context_irrelevant_rate={_metric(result.get('context_irrelevant_rate'))}"
         )
         if args.mode == "llm" and args.allow_fallback and not result["llm_used"]:
             print(f"  [WARN] llm fallback used; llm_error={result['llm_error']}")
@@ -205,9 +220,15 @@ def main() -> int:
     recall_values = [item["recall_at_k"] for item in results if item.get("recall_at_k") is not None]
     mrr_values = [item["mrr"] for item in results if item.get("mrr") is not None]
     irrelevant_values = [item["irrelevant_rate"] for item in results if item.get("irrelevant_rate") is not None]
+    context_irrelevant_values = [
+        item["context_irrelevant_rate"] for item in results if item.get("context_irrelevant_rate") is not None
+    ]
     rag_recall = sum(recall_values) / len(recall_values) if recall_values else None
     rag_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else None
     rag_irrelevant = sum(irrelevant_values) / len(irrelevant_values) if irrelevant_values else None
+    rag_context_irrelevant = (
+        sum(context_irrelevant_values) / len(context_irrelevant_values) if context_irrelevant_values else None
+    )
 
     print(f"\nEval summary: {passed}/{total} passed (mode={args.mode})")
     print(
@@ -215,6 +236,7 @@ def main() -> int:
         f"rag_mrr={_metric(rag_mrr)} "
         f"irrelevant_rate={_metric(rag_irrelevant)}"
     )
+    print(f"RAG context summary: context_irrelevant_rate={_metric(rag_context_irrelevant)}")
     return 0 if passed == total else 1
 
 

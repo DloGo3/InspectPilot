@@ -400,7 +400,7 @@ def _deterministic_answer(state: AgentState) -> str:
         return "当前数据不足以判断"
 
     stats_evidence = [item for item in state.get("evidence", []) if item.get("tool") != "retrieve_defect_knowledge"]
-    kb_evidence = state.get("kb_evidence", [])
+    kb_evidence = _answer_kb_evidence(state.get("kb_evidence", []))
     lines: List[str] = []
 
     if stats_evidence:
@@ -423,6 +423,31 @@ def _deterministic_answer(state: AgentState) -> str:
     if kb_evidence:
         lines.append("知识来源：backend/rag/knowledge_base.md；知识解释用于辅助复核，不直接等同于当前批次的确定原因。")
     return "\n".join(lines)
+
+
+def _answer_kb_evidence(kb_evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    budgeted = [item for item in kb_evidence if item.get("included_in_answer_context", True)]
+    return budgeted or kb_evidence[:1]
+
+
+def _answer_tool_results(tool_results: Dict[str, Any]) -> Dict[str, Any]:
+    compacted: Dict[str, Any] = {}
+    for key, value in (tool_results or {}).items():
+        entry = dict(value or {})
+        result = dict(entry.get("result") or {})
+        if entry.get("tool") == "retrieve_defect_knowledge":
+            items = result.get("items", [])
+            context_items = result.get("context_items") or _answer_kb_evidence(items)
+            result["items"] = context_items
+            result["context_items"] = context_items
+            result["omitted_doc_ids"] = [
+                item.get("doc_id")
+                for item in items
+                if item.get("doc_id") and not item.get("included_in_answer_context", True)
+            ]
+        entry["result"] = result
+        compacted[key] = entry
+    return compacted
 
 
 def generate_answer_node(state: AgentState) -> AgentState:
@@ -452,8 +477,8 @@ def generate_answer_node(state: AgentState) -> AgentState:
                 f"time_window：{state.get('time_window')}\n"
                 f"filters：{state.get('filters')}\n"
                 f"evidence：{state.get('evidence')}\n"
-                f"kb_evidence：{state.get('kb_evidence', [])}\n"
-                f"tool_results：{compact_tool_results(state.get('tool_results', {}))}\n"
+                f"kb_evidence：{_answer_kb_evidence(state.get('kb_evidence', []))}\n"
+                f"tool_results：{compact_tool_results(_answer_tool_results(state.get('tool_results', {})))}\n"
                 "请输出 JSON：{\"answer\":\"...\",\"warnings\":[\"...\"]}"
             ),
         },
