@@ -5,6 +5,16 @@ from typing import Any, Dict, Optional, Tuple
 from tools.defect_tools import get_latest_timestamp
 
 DEFECT_TYPES = ["裂纹", "划伤", "结疤", "氧化皮", "凹坑", "夹渣", "麻点", "压痕"]
+DEFECT_TYPE_ALIASES = {
+    "裂纹": ["裂纹", "开裂", "裂缝"],
+    "划伤": ["划伤", "刮伤", "擦伤"],
+    "结疤": ["结疤", "疤痕"],
+    "氧化皮": ["氧化皮", "氧化", "氧化铁皮"],
+    "凹坑": ["凹坑", "点坑"],
+    "夹渣": ["夹渣", "夹杂"],
+    "麻点": ["麻点", "麻面"],
+    "压痕": ["压痕", "压印", "压伤"],
+}
 FACE_WORDS = {
     "上表面": "top",
     "上面": "top",
@@ -23,7 +33,7 @@ def infer_intent(question: str) -> str:
     q = question.strip()
     if "报告" in q or "生成" in q:
         return "report"
-    if any(word in q for word in ["原因", "为什么", "标准", "等级", "规则", "模板", "说明", "解释", "怎么判定", "如何判定", "建议", "导致", "一定"]):
+    if any(word in q for word in ["原因", "为什么", "标准", "等级", "规则", "模板", "说明", "解释", "怎么判定", "如何判定", "建议", "导致", "一定", "危险", "人工确认", "误检", "看错", "工艺问题"]):
         return "knowledge"
     if "图片" in q or "原图" in q or "图像" in q:
         return "images"
@@ -47,7 +57,8 @@ def infer_intent(question: str) -> str:
 def extract_filters(question: str) -> Dict[str, Any]:
     filters: Dict[str, Any] = {}
     for defect_type in DEFECT_TYPES:
-        if defect_type in question:
+        aliases = DEFECT_TYPE_ALIASES.get(defect_type, [defect_type])
+        if any(alias in question for alias in aliases):
             filters["defect_type"] = defect_type
             break
     for word, face in FACE_WORDS.items():
@@ -103,5 +114,5 @@ def parse_time_range(question: str, db_path: Optional[str] = None) -> Tuple[Opti
 def should_use_rag(question: str, intent: str) -> bool:
     return intent in {"knowledge", "report"} or any(
         word in question
-        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核", "导致", "一定"]
+        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核", "导致", "一定", "危险", "人工确认", "误检", "看错", "工艺问题"]
     )

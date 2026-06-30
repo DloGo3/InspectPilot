@@ -17,6 +17,8 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
 DOMAIN_TERMS = [
     "裂纹",
+    "开裂",
+    "裂缝",
     "划伤",
     "结疤",
     "氧化皮",
@@ -27,6 +29,7 @@ DOMAIN_TERMS = [
     "缺陷",
     "等级",
     "严重",
+    "危险",
     "critical",
     "major",
     "minor",
@@ -38,6 +41,9 @@ DOMAIN_TERMS = [
     "报告",
     "模板",
     "复核",
+    "人工确认",
+    "误检",
+    "看错",
     "头部",
     "中部",
     "尾部",
@@ -62,15 +68,15 @@ DEFECT_TYPE_ALIASES = {
 }
 
 INTENT_KEYWORDS = {
-    "explain": ["说明", "解释", "是什么", "为什么", "重点关注", "关注"],
-    "root_cause": ["原因", "为什么", "导致", "可能", "有关", "排查", "检查"],
-    "uncertain_cause": ["一定", "必然", "确认", "导致的吗", "是不是", "能否判定"],
-    "severity": ["等级", "严重", "critical", "major", "minor", "高风险"],
+    "explain": ["说明", "解释", "是什么", "为什么", "重点关注", "关注", "怎么理解"],
+    "root_cause": ["原因", "为什么", "导致", "可能", "有关", "排查", "检查", "工艺问题"],
+    "uncertain_cause": ["一定", "必然", "确认", "导致的吗", "是不是", "能否判定", "能不能判定"],
+    "severity": ["等级", "严重", "危险", "critical", "major", "minor", "高风险"],
     "standard": ["标准", "判定", "规则", "依据"],
-    "review": ["复核", "闭环", "人工", "确认", "优先"],
-    "false_positive": ["误检", "阈值", "反光", "照明"],
+    "review": ["复核", "闭环", "人工", "确认", "优先", "人工确认", "要不要处理"],
+    "false_positive": ["误检", "阈值", "反光", "照明", "看错", "系统看错"],
     "spatial": ["集中", "位置", "头部", "中部", "尾部", "边部", "中心", "空间", "分布"],
-    "report": ["报告", "模板"],
+    "report": ["报告", "模板", "怎么写", "写进报告"],
     "answer_style": ["回答规范", "注意什么", "不要", "凭空", "审慎"],
     "quality": ["质量", "异常", "炉号", "计划号", "方坯", "NG"],
 }
@@ -89,8 +95,58 @@ INTENT_CATEGORY_BOOSTS = {
     "quality": {"standard", "review", "root_cause", "report_template"},
 }
 
+INTENT_REWRITE_PHRASES = {
+    "explain": ["缺陷说明", "知识解释"],
+    "root_cause": ["常见缺陷原因排查清单", "工艺记录", "检测证据"],
+    "uncertain_cause": ["因果不确定性", "谨慎表述", "不能直接确认"],
+    "severity": ["缺陷等级规则", "critical", "major", "minor", "高风险"],
+    "standard": ["方坯表面缺陷判定标准", "规则", "依据"],
+    "review": ["缺陷复核闭环建议", "人工复核", "质量风险"],
+    "false_positive": ["视觉误检", "检测阈值", "照明反光", "人工复核"],
+    "spatial": ["方坯空间分布解释规则", "头部", "边部", "集中"],
+    "report": ["缺陷分析报告模板", "报告内容"],
+    "answer_style": ["缺陷知识解释回答规范", "审慎表述", "证据约束"],
+    "quality": ["质量关注项", "炉号", "计划号", "方坯ID"],
+}
+
+REQUIRED_EVIDENCE_BY_INTENT = {
+    "root_cause": {"root_cause_checklist"},
+    "uncertain_cause": {"root_cause_checklist", "answer_rule", "review_loop"},
+    "severity": {"severity_rule"},
+    "standard": {"surface_standard"},
+    "review": {"review_loop"},
+    "false_positive": {"defect_explanation", "answer_rule", "review_loop"},
+    "spatial": {"spatial_rule"},
+    "report": {"report_template"},
+    "answer_style": {"answer_rule"},
+    "quality": {"surface_standard", "review_loop"},
+}
+
+EVIDENCE_TYPE_FOLLOWUP_QUERIES = {
+    "defect_explanation": "缺陷说明 高风险 可能原因",
+    "root_cause_checklist": "常见缺陷原因排查清单 工艺记录 复核",
+    "answer_rule": "缺陷知识解释回答规范 因果不确定性 谨慎表述",
+    "review_loop": "缺陷复核闭环建议 人工复核 质量风险",
+    "severity_rule": "缺陷等级规则 critical major minor 优先级",
+    "surface_standard": "方坯表面缺陷判定标准 可追溯数据",
+    "spatial_rule": "方坯空间分布解释规则 头部 边部 集中",
+    "report_template": "缺陷分析报告模板 报告内容",
+}
+
+MISSING_ASPECT_LABELS = {
+    "defect_explanation": "缺少缺陷类型说明",
+    "root_cause_checklist": "缺少原因排查清单",
+    "answer_rule": "缺少审慎回答规范",
+    "review_loop": "缺少复核闭环建议",
+    "severity_rule": "缺少缺陷等级规则",
+    "surface_standard": "缺少方坯表面判定标准",
+    "spatial_rule": "缺少空间分布解释规则",
+    "report_template": "缺少报告模板知识",
+}
+
 DEFAULT_EVIDENCE_BUDGET_CHARS = 1800
 DEFAULT_EVIDENCE_BUDGET_MAX_ITEMS = 3
+MAX_AGENTIC_RAG_ROUNDS = 2
 
 _MODEL_CACHE: Dict[str, Any] = {}
 
@@ -346,10 +402,252 @@ def analyze_rag_query(query: str) -> Dict[str, Any]:
         target_categories = [category for category in target_categories if category != "defect_type"]
 
     return {
+        "raw_query": query,
         "defect_types": defect_types,
         "intents": intents,
         "target_categories": target_categories,
     }
+
+
+def _dedupe_keep_order(values: List[str]) -> List[str]:
+    seen = set()
+    output: List[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            output.append(value)
+    return output
+
+
+def rewrite_rag_query(query: str, query_profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Rewrite colloquial defect questions into retrieval-friendly domain terms."""
+    query_profile = query_profile or analyze_rag_query(query)
+    defect_terms = query_profile.get("defect_types", [])
+    intents = query_profile.get("intents", [])
+    rewritten_terms: List[str] = []
+
+    rewritten_terms.extend(defect_terms)
+    for intent in intents:
+        rewritten_terms.extend(INTENT_REWRITE_PHRASES.get(intent, []))
+    if not rewritten_terms:
+        rewritten_terms.append(query)
+
+    rewritten_query = " ".join(_dedupe_keep_order(rewritten_terms))
+    rewrite_success = bool(rewritten_query and rewritten_query != query.strip())
+    return {
+        "original_query": query,
+        "rewritten_query": rewritten_query,
+        "rewrite_success": rewrite_success,
+        "defect_types": defect_terms,
+        "intents": intents,
+        "target_categories": query_profile.get("target_categories", []),
+    }
+
+
+def _required_evidence_types(query_profile: Dict[str, Any]) -> List[str]:
+    required: List[str] = []
+    defect_types = query_profile.get("defect_types", [])
+    intents = query_profile.get("intents", [])
+    raw_query = str(query_profile.get("raw_query", ""))
+
+    if defect_types:
+        required.append("defect_explanation")
+    for intent in intents:
+        required.extend(REQUIRED_EVIDENCE_BY_INTENT.get(intent, set()))
+    if not required and intents:
+        required.append("answer_rule")
+    if "surface_standard" in required and defect_types and any(
+        intent in intents for intent in ["severity", "review", "uncertain_cause"]
+    ):
+        surface_standard_explicit = any(
+            token in raw_query
+            for token in ["方坯表面", "表面缺陷判定", "表面判定", "判定标准是什么", "质量异常判定"]
+        )
+        if not surface_standard_explicit:
+            required = [item for item in required if item != "surface_standard"]
+    return _dedupe_keep_order(required)
+
+
+def _build_sub_queries(query: str, rewrite: Dict[str, Any], required_evidence_types: List[str]) -> List[Dict[str, str]]:
+    sub_queries: List[Dict[str, str]] = [
+        {"query": query, "purpose": "original"},
+        {"query": rewrite["rewritten_query"], "purpose": "rewrite"},
+    ]
+    defect_types = rewrite.get("defect_types", [])
+    intents = rewrite.get("intents", [])
+
+    for defect_type in defect_types:
+        parts = [defect_type, "缺陷说明"]
+        if "severity" in intents:
+            parts.extend(["critical", "高风险", "缺陷等级规则"])
+        if "root_cause" in intents or "uncertain_cause" in intents:
+            parts.extend(["原因排查", "工艺记录"])
+        if "review" in intents or "uncertain_cause" in intents:
+            parts.extend(["人工复核", "质量风险"])
+        if "spatial" in intents:
+            parts.extend(["空间分布", "头部", "边部"])
+        if "false_positive" in intents:
+            parts.extend(["视觉误检", "阈值", "照明"])
+        sub_queries.append({"query": " ".join(_dedupe_keep_order(parts)), "purpose": "defect_focus"})
+
+    for evidence_type in required_evidence_types:
+        followup = EVIDENCE_TYPE_FOLLOWUP_QUERIES.get(evidence_type)
+        if followup:
+            defect_prefix = " ".join(defect_types)
+            sub_queries.append(
+                {
+                    "query": f"{defect_prefix} {followup}".strip(),
+                    "purpose": f"required:{evidence_type}",
+                }
+            )
+
+    unique: List[Dict[str, str]] = []
+    seen = set()
+    for item in sub_queries:
+        q = item["query"].strip()
+        if q and q not in seen:
+            seen.add(q)
+            unique.append({"query": q, "purpose": item["purpose"]})
+    return unique[:8]
+
+
+def _merge_retrieval_candidates(rounds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for retrieval_round in rounds:
+        for query_result in retrieval_round.get("query_results", []):
+            query_text = query_result.get("query", "")
+            purpose = query_result.get("purpose", "")
+            for item in query_result.get("items", []):
+                doc_id = str(item.get("doc_id") or "")
+                if not doc_id:
+                    continue
+                current = merged.get(doc_id)
+                item_score = float(item.get("rerank_score", item.get("score", 0.0)) or 0.0)
+                if current is None or item_score > float(current.get("rerank_score", current.get("score", 0.0)) or 0.0):
+                    current = dict(item)
+                    current["matched_queries"] = []
+                    merged[doc_id] = current
+                current.setdefault("matched_queries", []).append({"query": query_text, "purpose": purpose})
+    return list(merged.values())
+
+
+def judge_evidence_sufficiency(items: List[Dict[str, Any]], required_evidence_types: List[str]) -> Dict[str, Any]:
+    selected_items = items
+    context_items = [item for item in items if item.get("included_in_answer_context", True)] or items[:1]
+    covered = _dedupe_keep_order([str(item.get("evidence_type")) for item in selected_items if item.get("evidence_type")])
+    context_covered = _dedupe_keep_order(
+        [str(item.get("evidence_type")) for item in context_items if item.get("evidence_type")]
+    )
+    missing = [evidence_type for evidence_type in required_evidence_types if evidence_type not in covered]
+    context_missing = [
+        evidence_type for evidence_type in required_evidence_types if evidence_type not in context_covered
+    ]
+    coverage_rate = 1.0 if not required_evidence_types else (
+        (len(required_evidence_types) - len(missing)) / len(required_evidence_types)
+    )
+    context_coverage_rate = 1.0 if not required_evidence_types else (
+        (len(required_evidence_types) - len(context_missing)) / len(required_evidence_types)
+    )
+    return {
+        "evidence_sufficient": not missing,
+        "context_evidence_sufficient": not context_missing,
+        "required_evidence_types": required_evidence_types,
+        "covered_evidence_types": covered,
+        "covered_context_evidence_types": context_covered,
+        "missing_evidence_types": missing,
+        "context_missing_evidence_types": context_missing,
+        "missing_aspects": [MISSING_ASPECT_LABELS.get(item, item) for item in missing],
+        "context_missing_aspects": [MISSING_ASPECT_LABELS.get(item, item) for item in context_missing],
+        "coverage_rate": round(float(coverage_rate), 4),
+        "context_coverage_rate": round(float(context_coverage_rate), 4),
+    }
+
+
+def _build_followup_queries(missing_evidence_types: List[str], defect_types: List[str]) -> List[Dict[str, str]]:
+    followups: List[Dict[str, str]] = []
+    prefix = " ".join(defect_types)
+    for evidence_type in missing_evidence_types:
+        query = EVIDENCE_TYPE_FOLLOWUP_QUERIES.get(evidence_type)
+        if query:
+            followups.append(
+                {
+                    "query": f"{prefix} {query}".strip(),
+                    "purpose": f"second_round:{evidence_type}",
+                }
+            )
+    return followups[:4]
+
+
+def _compact_retrieval_rounds(retrieval_rounds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    compact_rounds: List[Dict[str, Any]] = []
+    for retrieval_round in retrieval_rounds:
+        compact_results: List[Dict[str, Any]] = []
+        for query_result in retrieval_round.get("query_results", []):
+            compact_results.append(
+                {
+                    "query": query_result.get("query"),
+                    "purpose": query_result.get("purpose"),
+                    "doc_ids": query_result.get("doc_ids", []),
+                    "top_doc_id": query_result.get("top_doc_id"),
+                    "items": [
+                        {
+                            "rank": item.get("rank"),
+                            "doc_id": item.get("doc_id"),
+                            "title": item.get("title"),
+                            "evidence_type": item.get("evidence_type"),
+                            "score": item.get("score"),
+                            "dense_score": item.get("dense_score"),
+                            "metadata_score": item.get("metadata_score"),
+                            "rerank_score": item.get("rerank_score"),
+                        }
+                        for item in query_result.get("items", [])
+                    ],
+                }
+            )
+        compact_rounds.append(
+            {
+                "round": retrieval_round.get("round"),
+                "reason": retrieval_round.get("reason"),
+                "queries": retrieval_round.get("queries", []),
+                "query_results": compact_results,
+                "doc_ids": retrieval_round.get("doc_ids", []),
+            }
+        )
+    return compact_rounds
+
+
+def build_agentic_rag_trace(
+    query: str,
+    top_k: int,
+    items: List[Dict[str, Any]],
+    rewrite: Dict[str, Any],
+    sub_queries: List[Dict[str, str]],
+    retrieval_rounds: List[Dict[str, Any]],
+    evidence_judge: Dict[str, Any],
+    second_round_queries: List[Dict[str, str]],
+    warnings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    trace = build_rag_trace(query=query, top_k=top_k, items=items, warnings=warnings)
+    trace.update(
+        {
+            "rewritten_query": rewrite.get("rewritten_query"),
+            "rewrite_success": rewrite.get("rewrite_success", False),
+            "sub_queries": sub_queries,
+            "retrieval_rounds": _compact_retrieval_rounds(retrieval_rounds),
+            "evidence_sufficient": evidence_judge.get("evidence_sufficient", False),
+            "context_evidence_sufficient": evidence_judge.get("context_evidence_sufficient", False),
+            "required_evidence_types": evidence_judge.get("required_evidence_types", []),
+            "covered_evidence_types": evidence_judge.get("covered_evidence_types", []),
+            "covered_context_evidence_types": evidence_judge.get("covered_context_evidence_types", []),
+            "missing_aspects": evidence_judge.get("missing_aspects", []),
+            "context_missing_aspects": evidence_judge.get("context_missing_aspects", []),
+            "coverage_rate": evidence_judge.get("coverage_rate", 0.0),
+            "context_coverage_rate": evidence_judge.get("context_coverage_rate", 0.0),
+            "second_round_queries": second_round_queries,
+            "second_round_used": bool(second_round_queries),
+        }
+    )
+    return trace
 
 
 def _chunk_metadata_values(chunk: Dict[str, Any], key: str) -> List[str]:
@@ -361,6 +659,7 @@ def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) 
     reasons: List[str] = []
     query_defects = query_profile.get("defect_types", [])
     query_intents = query_profile.get("intents", [])
+    raw_query = str(query_profile.get("raw_query", ""))
     target_categories = set(query_profile.get("target_categories", []))
     chunk_defects = _chunk_metadata_values(chunk, "defect_types")
     chunk_intents = _chunk_metadata_values(chunk, "applicable_intents")
@@ -415,9 +714,21 @@ def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) 
         score += 0.18
         reasons.append("原因排查清单优先")
 
+    if chunk.get("evidence_type") == "root_cause_checklist" and any(
+        token in raw_query for token in ["原因排查清单", "原因排查", "排查清单"]
+    ):
+        score += 0.12
+        reasons.append("显式命中原因排查清单")
+
     if "review" in query_intents and chunk.get("evidence_type") == "review_loop":
         score += 0.16
         reasons.append("复核闭环优先")
+
+    if chunk.get("evidence_type") == "review_loop" and any(
+        token in raw_query for token in ["人工确认", "人工复核", "优先人工", "复核闭环"]
+    ):
+        score += 0.08
+        reasons.append("显式命中复核闭环")
 
     if "severity" in query_intents and chunk.get("evidence_type") == "severity_rule":
         score += 0.18
@@ -430,6 +741,18 @@ def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) 
     if "spatial" in query_intents and chunk.get("evidence_type") == "spatial_rule":
         score += 0.16
         reasons.append("空间解释优先")
+
+    if chunk.get("evidence_type") == "spatial_rule" and any(
+        token in raw_query for token in ["空间分布", "头部", "边部", "集中"]
+    ):
+        score += 0.12
+        reasons.append("显式命中空间分布规则")
+
+    if chunk.get("evidence_type") == "answer_rule" and any(
+        token in raw_query for token in ["回答规范", "注意什么", "谨慎表述", "不能直接", "不要"]
+    ):
+        score += 0.16
+        reasons.append("显式命中回答规范")
 
     if doc_id in {"response_style_rule", "review_loop_standard"} and "root_cause" in query_intents:
         score += 0.04
@@ -456,11 +779,16 @@ def _evidence_budget_max_items() -> int:
     return max(1, min(value, 10))
 
 
-def _apply_evidence_budget(items: List[Dict[str, Any]], max_chars: Optional[int] = None) -> List[Dict[str, Any]]:
+def _apply_evidence_budget(
+    items: List[Dict[str, Any]],
+    max_chars: Optional[int] = None,
+    required_evidence_types: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     max_chars = max_chars or _evidence_budget_chars()
     max_items = _evidence_budget_max_items()
     used_chars = 0
     output: List[Dict[str, Any]] = []
+    required = set(required_evidence_types or [])
     for final_rank, item in enumerate(items, start=1):
         updated = dict(item)
         content_chars = len(str(updated.get("title", ""))) + len(str(updated.get("content", "")))
@@ -484,11 +812,76 @@ def _apply_evidence_budget(items: List[Dict[str, Any]], max_chars: Optional[int]
             "reason": budget_reason,
         }
         output.append(updated)
+    if required:
+        included_types = {
+            str(item.get("evidence_type"))
+            for item in output
+            if item.get("included_in_answer_context", True) and item.get("evidence_type")
+        }
+        for item in output:
+            evidence_type = str(item.get("evidence_type") or "")
+            if (
+                not evidence_type
+                or evidence_type not in required
+                or evidence_type in included_types
+                or item.get("included_in_answer_context", True)
+            ):
+                continue
+
+            content_chars = int(item.get("evidence_budget", {}).get("content_chars", 0) or 0)
+            if used_chars + content_chars <= max_chars:
+                item["included_in_answer_context"] = True
+                item["evidence_budget"]["reason"] = "required_evidence"
+                used_chars += content_chars
+                included_types.add(evidence_type)
+                continue
+
+            replacement = _find_budget_replacement(output, required, keep_rank=1)
+            if replacement is None:
+                continue
+            replacement_chars = int(replacement.get("evidence_budget", {}).get("content_chars", 0) or 0)
+            if used_chars - replacement_chars + content_chars > max_chars:
+                continue
+            replacement["included_in_answer_context"] = False
+            replacement["evidence_budget"]["reason"] = "replaced_by_required_evidence"
+            item["included_in_answer_context"] = True
+            item["evidence_budget"]["reason"] = "required_evidence"
+            used_chars = used_chars - replacement_chars + content_chars
+            included_types.add(evidence_type)
+
+    for item in output:
+        item["evidence_budget"]["used_chars"] = used_chars
     return output
 
 
-def _rerank_results(query: str, candidates: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-    query_profile = analyze_rag_query(query)
+def _find_budget_replacement(
+    items: List[Dict[str, Any]],
+    required_evidence_types: set[str],
+    keep_rank: int = 1,
+) -> Optional[Dict[str, Any]]:
+    included_type_counts: Dict[str, int] = {}
+    for item in items:
+        if item.get("included_in_answer_context", True) and item.get("evidence_type"):
+            evidence_type = str(item.get("evidence_type"))
+            included_type_counts[evidence_type] = included_type_counts.get(evidence_type, 0) + 1
+
+    for item in reversed(items):
+        if not item.get("included_in_answer_context", True) or item.get("rank") == keep_rank:
+            continue
+        evidence_type = str(item.get("evidence_type") or "")
+        if evidence_type not in required_evidence_types or included_type_counts.get(evidence_type, 0) > 1:
+            return item
+    return None
+
+
+def _rerank_results(
+    query: str,
+    candidates: List[Dict[str, Any]],
+    top_k: int,
+    query_profile: Optional[Dict[str, Any]] = None,
+    required_evidence_types: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    query_profile = query_profile or analyze_rag_query(query)
     ranked: List[Dict[str, Any]] = []
     for candidate in candidates:
         item = dict(candidate)
@@ -509,7 +902,7 @@ def _rerank_results(query: str, candidates: List[Dict[str, Any]], top_k: int) ->
         ),
         reverse=True,
     )
-    return _apply_evidence_budget(ranked[:top_k])
+    return _apply_evidence_budget(ranked[:top_k], required_evidence_types=required_evidence_types)
 
 
 def build_rag_trace(
@@ -730,6 +1123,109 @@ def retrieve_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = N
 
     results = _retrieve_with_keywords(query, candidate_k)
     return _rerank_results(query, results, top_k)
+
+
+def retrieve_agentic_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = None) -> Dict[str, Any]:
+    """Plan, retrieve, judge, and optionally repair RAG evidence with deterministic Agentic RAG steps."""
+    query = (query or "").strip()
+    top_k = max(1, min(int(top_k or 3), 10))
+    query_profile = analyze_rag_query(query)
+    rewrite = rewrite_rag_query(query, query_profile)
+    required_evidence_types = _required_evidence_types(query_profile)
+    sub_queries = _build_sub_queries(query, rewrite, required_evidence_types)
+    retrieval_rounds: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+
+    def run_round(round_index: int, reason: str, queries: List[Dict[str, str]]) -> None:
+        query_results: List[Dict[str, Any]] = []
+        for planned_query in queries:
+            items = retrieve_knowledge(planned_query["query"], top_k=top_k, model_name=model_name)
+            query_results.append(
+                {
+                    "query": planned_query["query"],
+                    "purpose": planned_query.get("purpose", ""),
+                    "doc_ids": [item.get("doc_id") for item in items if item.get("doc_id")],
+                    "top_doc_id": items[0].get("doc_id") if items else None,
+                    "items": items,
+                }
+            )
+        retrieval_rounds.append(
+            {
+                "round": round_index,
+                "reason": reason,
+                "queries": queries,
+                "query_results": query_results,
+                "doc_ids": _dedupe_keep_order(
+                    [
+                        str(doc_id)
+                        for result in query_results
+                        for doc_id in result.get("doc_ids", [])
+                        if doc_id
+                    ]
+                ),
+            }
+        )
+
+    run_round(1, "initial_multi_query", sub_queries)
+    merged = _merge_retrieval_candidates(retrieval_rounds)
+    final_items = _rerank_results(
+        rewrite["rewritten_query"],
+        merged,
+        top_k,
+        query_profile=query_profile,
+        required_evidence_types=required_evidence_types,
+    )
+    evidence_judge = judge_evidence_sufficiency(final_items, required_evidence_types)
+    second_round_queries: List[Dict[str, str]] = []
+
+    if (
+        not evidence_judge.get("evidence_sufficient")
+        and MAX_AGENTIC_RAG_ROUNDS >= 2
+        and evidence_judge.get("missing_evidence_types")
+    ):
+        second_round_queries = _build_followup_queries(
+            evidence_judge.get("missing_evidence_types", []),
+            rewrite.get("defect_types", []),
+        )
+        already_queried = {item["query"] for item in sub_queries}
+        second_round_queries = [item for item in second_round_queries if item["query"] not in already_queried]
+        if second_round_queries:
+            run_round(2, "evidence_gap_repair", second_round_queries)
+            merged = _merge_retrieval_candidates(retrieval_rounds)
+            final_items = _rerank_results(
+                rewrite["rewritten_query"],
+                merged,
+                top_k,
+                query_profile=query_profile,
+                required_evidence_types=required_evidence_types,
+            )
+            evidence_judge = judge_evidence_sufficiency(final_items, required_evidence_types)
+
+    if not evidence_judge.get("evidence_sufficient"):
+        warnings.append("rag_evidence_insufficient:" + ",".join(evidence_judge.get("missing_aspects", [])))
+
+    trace = build_agentic_rag_trace(
+        query=query,
+        top_k=top_k,
+        items=final_items,
+        rewrite=rewrite,
+        sub_queries=sub_queries,
+        retrieval_rounds=retrieval_rounds,
+        evidence_judge=evidence_judge,
+        second_round_queries=second_round_queries,
+        warnings=warnings,
+    )
+    return {
+        "query": query,
+        "top_k": top_k,
+        "items": final_items,
+        "context_items": [item for item in final_items if item.get("included_in_answer_context", True)],
+        "trace": trace,
+        "rewrite": rewrite,
+        "evidence_judge": evidence_judge,
+        "second_round_queries": second_round_queries,
+        "warnings": warnings,
+    }
 
 
 def get_rag_status() -> Dict[str, Any]:

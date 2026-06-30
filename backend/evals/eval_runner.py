@@ -47,6 +47,11 @@ def _kb_context_doc_ids(state: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _first_rag_trace(state: Dict[str, Any]) -> Dict[str, Any]:
+    traces = state.get("rag_trace", [])
+    return traces[0] if traces else {}
+
+
 def _rag_top_k(state: Dict[str, Any], doc_ids: List[str]) -> int:
     traces = state.get("rag_trace", [])
     if traces and traces[0].get("top_k"):
@@ -96,6 +101,7 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     doc_ids = _kb_doc_ids(state)
     context_doc_ids = _kb_context_doc_ids(state)
     top_doc_id = doc_ids[0] if doc_ids else None
+    rag_trace = _first_rag_trace(state)
 
     expected_tools = case.get("expected_tools", [])
     must_not_tools = case.get("must_not_tools", [])
@@ -125,6 +131,11 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     irrelevant_rate = _irrelevant_rate(doc_ids, relevant_doc_ids)
     context_recall_at_k = _recall_at_k(context_doc_ids, relevant_doc_ids)
     context_irrelevant_rate = _irrelevant_rate(context_doc_ids, relevant_doc_ids)
+    rewrite_success = rag_trace.get("rewrite_success") if rag_trace else None
+    coverage_rate = rag_trace.get("coverage_rate") if rag_trace else None
+    evidence_sufficient = rag_trace.get("evidence_sufficient") if rag_trace else None
+    second_round_used = bool(rag_trace.get("second_round_used")) if rag_trace else False
+    second_round_success = evidence_sufficient if second_round_used else None
 
     insufficient_ok = True
     if case.get("expect_insufficient"):
@@ -167,6 +178,11 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         "irrelevant_rate": irrelevant_rate,
         "context_recall_at_k": context_recall_at_k,
         "context_irrelevant_rate": context_irrelevant_rate,
+        "rewrite_success": rewrite_success,
+        "coverage_rate": coverage_rate,
+        "evidence_sufficient": evidence_sufficient,
+        "second_round_used": second_round_used,
+        "second_round_success": second_round_success,
         "missing_tools": missing_tools,
         "unexpected_tools": unexpected_tools,
         "forbidden_tools": forbidden_tools,
@@ -208,7 +224,8 @@ def main() -> int:
             f"recall@{result.get('rag_top_k')}={_metric(result.get('recall_at_k'))} "
             f"mrr={_metric(result.get('mrr'))} "
             f"irrelevant_rate={_metric(result.get('irrelevant_rate'))} "
-            f"context_irrelevant_rate={_metric(result.get('context_irrelevant_rate'))}"
+            f"context_irrelevant_rate={_metric(result.get('context_irrelevant_rate'))} "
+            f"coverage={_metric(result.get('coverage_rate'))}"
         )
         if args.mode == "llm" and args.allow_fallback and not result["llm_used"]:
             print(f"  [WARN] llm fallback used; llm_error={result['llm_error']}")
@@ -223,12 +240,22 @@ def main() -> int:
     context_irrelevant_values = [
         item["context_irrelevant_rate"] for item in results if item.get("context_irrelevant_rate") is not None
     ]
+    rewrite_values = [1.0 if item.get("rewrite_success") else 0.0 for item in results if item.get("rewrite_success") is not None]
+    coverage_values = [item["coverage_rate"] for item in results if item.get("coverage_rate") is not None]
+    second_round_values = [
+        1.0 if item.get("second_round_success") else 0.0
+        for item in results
+        if item.get("second_round_success") is not None
+    ]
     rag_recall = sum(recall_values) / len(recall_values) if recall_values else None
     rag_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else None
     rag_irrelevant = sum(irrelevant_values) / len(irrelevant_values) if irrelevant_values else None
     rag_context_irrelevant = (
         sum(context_irrelevant_values) / len(context_irrelevant_values) if context_irrelevant_values else None
     )
+    rewrite_success_rate = sum(rewrite_values) / len(rewrite_values) if rewrite_values else None
+    coverage_rate = sum(coverage_values) / len(coverage_values) if coverage_values else None
+    second_round_success_rate = sum(second_round_values) / len(second_round_values) if second_round_values else None
 
     print(f"\nEval summary: {passed}/{total} passed (mode={args.mode})")
     print(
@@ -237,6 +264,11 @@ def main() -> int:
         f"irrelevant_rate={_metric(rag_irrelevant)}"
     )
     print(f"RAG context summary: context_irrelevant_rate={_metric(rag_context_irrelevant)}")
+    print(
+        f"Agentic RAG summary: rewrite_success_rate={_metric(rewrite_success_rate)} "
+        f"coverage_rate={_metric(coverage_rate)} "
+        f"second_round_success_rate={_metric(second_round_success_rate)}"
+    )
     return 0 if passed == total else 1
 
 

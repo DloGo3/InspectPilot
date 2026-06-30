@@ -33,6 +33,15 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - Evidence Budget 通过 `RAG_EVIDENCE_BUDGET_CHARS` 和 `RAG_EVIDENCE_BUDGET_MAX_ITEMS` 控制进入答案生成上下文的知识片段，前端仍展示完整 TopK 证据，避免 LLM 被弱相关证据淹没
 - 前端参考知识区展示重排依据，便于演示“Agent 基于可追溯知识片段回答，而不是凭空解释”
 
+## v0.3.3 Query Rewrite + Multi-Query + Evidence Judge
+
+- RAG 从单次检索升级为轻量 Agentic RAG：`原问题 -> query rewrite -> 多子查询检索 -> 合并去重 -> business rerank -> evidence budget -> evidence judge -> 最多一轮补查`
+- 规则型 Query Rewrite 支持口语别名和业务意图归一：例如“开裂”归一为“裂纹”，“危险”映射到 `severity/critical`，“看错”映射到 `false_positive`
+- Multi-Query Retrieval 会围绕缺陷说明、等级规则、空间分布、原因排查、复核闭环和回答规范生成子查询，解决复杂问题只查到单类证据的问题
+- Evidence Judge 基于 `evidence_type` 判断证据是否覆盖当前问题所需类型，输出 `required_evidence_types`、`covered_evidence_types`、`missing_aspects`、`coverage_rate`
+- `rag_trace` 新增 `rewritten_query`、`sub_queries`、`retrieval_rounds`、`evidence_sufficient`、`second_round_queries` 等字段，便于演示规划、检索、观察和补查过程
+- `eval_runner.py` 新增 Agentic RAG 指标：`rewrite_success_rate`、`coverage_rate`、`second_round_success_rate`
+
 ## 启动后端
 
 ```powershell

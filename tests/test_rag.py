@@ -5,7 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from rag.retriever import build_rag_trace, get_rag_status, retrieve_knowledge
+from rag.retriever import build_rag_trace, get_rag_status, retrieve_agentic_knowledge, retrieve_knowledge
 
 
 def test_retrieve_knowledge_keyword_fallback():
@@ -56,3 +56,37 @@ def test_rag_business_rerank_keeps_defect_context_clean():
         item["doc_id"] == "defect_type_crack" or item.get("category") != "defect_type"
         for item in results
     )
+
+
+def test_agentic_rag_rewrites_colloquial_question():
+    result = retrieve_agentic_knowledge("开裂是不是很危险，要不要人工确认？", top_k=5)
+    trace = result["trace"]
+    doc_ids = [item["doc_id"] for item in result["items"]]
+
+    assert trace["rewrite_success"] is True
+    assert "裂纹" in trace["rewritten_query"]
+    assert trace["evidence_sufficient"] is True
+    assert trace["context_evidence_sufficient"] is True
+    assert "review_loop" in trace["covered_evidence_types"]
+    assert "review_loop" in trace["covered_context_evidence_types"]
+    assert doc_ids[0] == "defect_type_crack"
+
+
+def test_agentic_rag_keeps_surface_standard_optional_for_review_question():
+    result = retrieve_agentic_knowledge("开裂危险程度 是否需要人工确认 判定标准", top_k=5)
+    trace = result["trace"]
+
+    assert trace["evidence_sufficient"] is True
+    assert trace["context_evidence_sufficient"] is True
+    assert "surface_standard" not in trace["required_evidence_types"]
+    assert "review_loop" in trace["covered_context_evidence_types"]
+
+
+def test_agentic_rag_exposes_multi_query_trace():
+    result = retrieve_agentic_knowledge("裂纹集中在头部和边部是不是工艺问题？", top_k=5)
+    trace = result["trace"]
+
+    assert len(trace["sub_queries"]) >= 3
+    assert trace["retrieval_rounds"]
+    assert "spatial_rule" in trace["required_evidence_types"]
+    assert any(item["doc_id"] == "spatial_distribution_rule" for item in result["items"])

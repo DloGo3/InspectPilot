@@ -55,9 +55,33 @@
               <div class="evidence-meta">
                 <span>answer={{ trace.answer_mode || "-" }}</span>
                 <span>model={{ trace.embedding_model || "-" }}</span>
+                <span>sufficient={{ trace.evidence_sufficient === false ? "否" : "是" }}</span>
+                <span>coverage={{ formatRatio(trace.coverage_rate) }}</span>
+                <span>context={{ trace.context_evidence_sufficient === false ? "不足" : "充足" }}</span>
+                <span>context_coverage={{ formatRatio(trace.context_coverage_rate) }}</span>
                 <span>docs={{ (trace.selected_doc_ids || []).join(", ") }}</span>
                 <span>included={{ trace.evidence_budget?.included_doc_ids?.join(", ") || "-" }}</span>
                 <span>omitted={{ trace.evidence_budget?.omitted_doc_ids?.join(", ") || "-" }}</span>
+              </div>
+              <div v-if="trace.rewritten_query" class="trace-detail">
+                rewrite={{ trace.rewritten_query }}
+              </div>
+              <div v-if="trace.sub_queries?.length" class="trace-detail">
+                sub_queries={{ trace.sub_queries.map((item) => item.query).join(" | ") }}
+              </div>
+              <div v-if="trace.required_evidence_types?.length" class="trace-detail">
+                required={{ trace.required_evidence_types.join(", ") }}
+                covered={{ (trace.covered_evidence_types || []).join(", ") || "-" }}
+                context_covered={{ (trace.covered_context_evidence_types || []).join(", ") || "-" }}
+              </div>
+              <div v-if="trace.missing_aspects?.length" class="trace-detail warning">
+                missing={{ trace.missing_aspects.join("；") }}
+              </div>
+              <div v-if="trace.context_missing_aspects?.length" class="trace-detail warning">
+                context_missing={{ trace.context_missing_aspects.join("；") }}
+              </div>
+              <div v-if="trace.second_round_queries?.length" class="trace-detail">
+                second_round={{ trace.second_round_queries.map((item) => item.query).join(" | ") }}
               </div>
             </li>
           </ul>
@@ -97,6 +121,13 @@ function formatScore(score) {
     return "-";
   }
   return score.toFixed(4);
+}
+
+function formatRatio(value) {
+  if (typeof value !== "number") {
+    return "-";
+  }
+  return value.toFixed(2);
 }
 
 async function ask() {
@@ -308,6 +339,17 @@ button:disabled {
 .trace-title span {
   color: #627d98;
   font-size: 13px;
+}
+
+.trace-detail {
+  margin-top: 6px;
+  color: #486581;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.trace-detail.warning {
+  color: #9f580a;
 }
 
 .tool-list li {

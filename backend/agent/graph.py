@@ -35,6 +35,8 @@ OUT_OF_SCOPE_ANSWER = "当前 InspectPilot 主要用于方坯表面缺陷检测�
 DEFECT_ANALYSIS_KEYWORDS = [
     "缺陷",
     "裂纹",
+    "开裂",
+    "裂缝",
     "划伤",
     "结疤",
     "氧化皮",
@@ -58,6 +60,11 @@ DEFECT_ANALYSIS_KEYWORDS = [
     "报告",
     "统计",
     "质量",
+    "危险",
+    "误检",
+    "看错",
+    "人工确认",
+    "工艺问题",
     "原因",
     "标准",
     "等级",
@@ -333,6 +340,8 @@ def execute_tools_node(state: AgentState) -> AgentState:
         result = execution["result"]
 
         warnings.extend(execution.get("warnings", []))
+        if name == "retrieve_defect_knowledge" and result.get("warnings"):
+            warnings.extend([str(warning) for warning in result.get("warnings", [])])
         filters = _merge_filters(filters, execution.get("filters", {}))
         time_window = _choose_time_window(time_window, execution.get("time_window", {}))
         tool_results[call_key] = {

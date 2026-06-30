@@ -13,7 +13,7 @@ from tools.defect_tools import (
     query_defect_stats,
     query_defects_by_furnace,
 )
-from rag.retriever import build_rag_trace, retrieve_knowledge
+from rag.retriever import retrieve_agentic_knowledge
 
 ALLOWED_FILTERS = {
     "defect_type",
@@ -31,15 +31,7 @@ ALLOWED_WIDTH_REGIONS = {"edge", "center"}
 ALLOWED_SEVERITY = {"minor", "major", "critical"}
 
 def retrieve_defect_knowledge_tool(query: str, top_k: int = 3) -> Dict[str, Any]:
-    items = retrieve_knowledge(query=query, top_k=top_k)
-    context_items = [item for item in items if item.get("included_in_answer_context", True)]
-    return {
-        "query": query,
-        "top_k": top_k,
-        "items": items,
-        "context_items": context_items,
-        "trace": build_rag_trace(query=query, top_k=top_k, items=items),
-    }
+    return retrieve_agentic_knowledge(query=query, top_k=top_k)
 
 
 TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
@@ -358,7 +350,8 @@ def summarize_result(tool_name: str, result: Dict[str, Any]) -> str:
         top = items[0]
         return (
             f"检索到 {len(items)} 条知识片段，Top1={top.get('title')}，"
-            f"检索器={top.get('retriever')}，rerank={top.get('rerank_score', top.get('score'))}。"
+            f"检索器={top.get('retriever')}，rerank={top.get('rerank_score', top.get('score'))}，"
+            f"证据充分={result.get('evidence_judge', {}).get('evidence_sufficient')}。"
         )
     return "工具已返回结果。"
 

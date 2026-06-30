@@ -20,7 +20,7 @@ from tools.defect_tools import (
 app = FastAPI(
     title="InspectPilot API",
     description="Industrial vision defect analysis Agent for billet surface inspection results.",
-    version="0.3.2",
+    version="0.3.3",
 )
 
 app.add_middleware(
