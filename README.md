@@ -13,7 +13,7 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - LLM Tool Calling 工作流：`prepare -> plan_tool_calls -> execute_tools -> generate_answer`
 - 受控工具调用：只允许调用 `backend/tools/defect_tools.py` 中封装好的确定性统计工具
 - RAG 知识检索：`retrieve_defect_knowledge` 从 `backend/rag/knowledge_base.md` 检索缺陷类别、等级规则、判定标准、常见原因和报告模板
-- FAISS/BGE 优先：安装 `faiss-cpu`、`sentence-transformers` 后使用 `BAAI/bge-small-zh-v1.5` 建索引；依赖缺失时自动降级到关键词检索，保证本地演示不断流
+- Hybrid Retrieval：默认使用 FAISS/BGE 语义召回 + BM25 词面召回，并通过 RRF 融合候选；向量依赖缺失时自动降级到 BM25/关键词检索，保证本地演示不断流
 - OpenAI 兼容接口：支持 OpenAI、通义千问、DeepSeek、本地兼容服务等
 - 统一响应字段：`answer`、`tool_calls`、`evidence`、`kb_evidence`、`rag_trace`、`time_window`、`filters`、`warnings`
 - 最小评测集：覆盖工具选择、关键统计结果、无数据不编造规则
@@ -42,6 +42,15 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - `rag_trace` 新增 `rewritten_query`、`sub_queries`、`retrieval_rounds`、`evidence_sufficient`、`second_round_queries` 等字段，便于演示规划、检索、观察和补查过程
 - `eval_runner.py` 新增 Agentic RAG 指标：`rewrite_success_rate`、`coverage_rate`、`second_round_success_rate`
 
+## v0.3.4 Hybrid Retrieval
+
+- RAG 召回层从“FAISS/BGE 优先，失败后关键词兜底”升级为默认 Hybrid Retrieval：FAISS/BGE 负责语义相似度，BM25 负责精确词面匹配和口语关键词兜底
+- 新增轻量 BM25 实现，不引入额外依赖；中文场景通过领域词、英文/数字 token、中文 bi-gram/tri-gram 共同建模
+- FAISS 与 BM25 候选通过 Reciprocal Rank Fusion 融合，输出 `dense_score`、`bm25_score`、`fusion_score`、`fusion_strategy` 和 `fusion_components`
+- 现有 business rerank、Evidence Budget、Evidence Judge 保持在融合召回之后继续生效，避免单纯词面命中挤掉业务必需证据
+- `RAG_RETRIEVER_MODE` 支持 `hybrid`、`faiss`、`bm25` 三种模式，便于对比召回策略和离线演示
+- 前端参考知识和 RAG Trace 展示 BM25 / fusion 字段；`eval_runner.py` 输出 retriever 使用分布、BM25 使用率和 hybrid 使用率
+
 ## 启动后端
 
 ```powershell
@@ -67,6 +76,7 @@ OPENAI_API_KEY=sk-your-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 MODEL_NAME=gpt-4o-mini
 EMBEDDING_MODEL_NAME=BAAI/bge-small-zh-v1.5
+RAG_RETRIEVER_MODE=hybrid
 RAG_TOP_K=3
 RAG_EVIDENCE_BUDGET_CHARS=1800
 RAG_EVIDENCE_BUDGET_MAX_ITEMS=3
@@ -89,7 +99,7 @@ cd D:\求职\agent系统学习codex\InspectPilot\backend
 python rag\build_index.py --force
 ```
 
-如果本机暂未安装 `faiss-cpu`、`sentence-transformers` 或模型尚未下载，系统会在运行时使用关键词兜底检索，并在 `kb_evidence.retriever` 中标记为 `keyword_fallback`。
+如果本机暂未安装 `faiss-cpu`、`sentence-transformers` 或模型尚未下载，系统会在运行时优先使用 BM25 兜底检索，并在 `kb_evidence.retriever` 中标记为 `bm25_fallback`；极端情况下再降级为 `keyword_fallback`。
 
 ## 运行评测
 

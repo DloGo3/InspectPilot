@@ -136,6 +136,7 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     evidence_sufficient = rag_trace.get("evidence_sufficient") if rag_trace else None
     second_round_used = bool(rag_trace.get("second_round_used")) if rag_trace else False
     second_round_success = evidence_sufficient if second_round_used else None
+    retriever = rag_trace.get("retriever") if rag_trace else None
 
     insufficient_ok = True
     if case.get("expect_insufficient"):
@@ -183,6 +184,9 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         "evidence_sufficient": evidence_sufficient,
         "second_round_used": second_round_used,
         "second_round_success": second_round_success,
+        "retriever": retriever,
+        "hybrid_used": retriever == "hybrid_faiss_bm25",
+        "bm25_used": retriever in {"hybrid_faiss_bm25", "bm25", "bm25_fallback"},
         "missing_tools": missing_tools,
         "unexpected_tools": unexpected_tools,
         "forbidden_tools": forbidden_tools,
@@ -221,6 +225,7 @@ def main() -> int:
             f"scope={result['scope']} planner={result['planner_mode']} answer={result['answer_mode']} "
             f"tools={result['tool_names']} "
             f"need_rag={result.get('need_rag')} top1={result.get('top_doc_id') or '-'} "
+            f"retriever={result.get('retriever') or '-'} "
             f"recall@{result.get('rag_top_k')}={_metric(result.get('recall_at_k'))} "
             f"mrr={_metric(result.get('mrr'))} "
             f"irrelevant_rate={_metric(result.get('irrelevant_rate'))} "
@@ -247,6 +252,13 @@ def main() -> int:
         for item in results
         if item.get("second_round_success") is not None
     ]
+    rag_retrievers: Dict[str, int] = {}
+    for item in results:
+        retriever = item.get("retriever")
+        if retriever:
+            rag_retrievers[str(retriever)] = rag_retrievers.get(str(retriever), 0) + 1
+    bm25_values = [1.0 if item.get("bm25_used") else 0.0 for item in results if item.get("retriever")]
+    hybrid_values = [1.0 if item.get("hybrid_used") else 0.0 for item in results if item.get("retriever")]
     rag_recall = sum(recall_values) / len(recall_values) if recall_values else None
     rag_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else None
     rag_irrelevant = sum(irrelevant_values) / len(irrelevant_values) if irrelevant_values else None
@@ -256,6 +268,8 @@ def main() -> int:
     rewrite_success_rate = sum(rewrite_values) / len(rewrite_values) if rewrite_values else None
     coverage_rate = sum(coverage_values) / len(coverage_values) if coverage_values else None
     second_round_success_rate = sum(second_round_values) / len(second_round_values) if second_round_values else None
+    bm25_usage_rate = sum(bm25_values) / len(bm25_values) if bm25_values else None
+    hybrid_usage_rate = sum(hybrid_values) / len(hybrid_values) if hybrid_values else None
 
     print(f"\nEval summary: {passed}/{total} passed (mode={args.mode})")
     print(
@@ -268,6 +282,11 @@ def main() -> int:
         f"Agentic RAG summary: rewrite_success_rate={_metric(rewrite_success_rate)} "
         f"coverage_rate={_metric(coverage_rate)} "
         f"second_round_success_rate={_metric(second_round_success_rate)}"
+    )
+    print(
+        f"Hybrid retrieval summary: bm25_usage_rate={_metric(bm25_usage_rate)} "
+        f"hybrid_usage_rate={_metric(hybrid_usage_rate)} "
+        f"retrievers={rag_retrievers or '-'}"
     )
     return 0 if passed == total else 1
 

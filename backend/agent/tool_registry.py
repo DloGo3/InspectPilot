@@ -103,7 +103,7 @@ _TOOL_DESCRIPTIONS = {
     "get_top_ng_billets": "Return top billets by NG rate. Use for NG率最高 or 方坯ID质量异常.",
     "get_defect_images": "Return image evidence paths for matching defect records.",
     "generate_defect_report": "Generate a Markdown defect statistics and spatial distribution report.",
-    "retrieve_defect_knowledge": "Retrieve defect-domain knowledge from the FAISS/BGE RAG knowledge base. Use for 原因、标准、等级、规则、判定、报告模板、复核建议 or defect explanations.",
+    "retrieve_defect_knowledge": "Retrieve defect-domain knowledge from the hybrid FAISS/BGE + BM25 RAG knowledge base. Use for 原因、标准、等级、规则、判定、报告模板、复核建议 or defect explanations.",
 }
 
 for _name, _description in _TOOL_DESCRIPTIONS.items():

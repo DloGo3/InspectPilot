@@ -31,7 +31,11 @@
                 <span>{{ item.source || "knowledge_base.md" }}</span>
                 <span>{{ item.retriever || "-" }}</span>
                 <span>{{ item.embedding_model || "-" }}</span>
-                <span>dense={{ formatScore(item.dense_score ?? item.keyword_score) }}</span>
+                <span v-if="item.fusion_score !== undefined">fusion={{ formatScore(item.fusion_score) }}</span>
+                <span v-if="item.dense_score !== undefined">dense={{ formatScore(item.dense_score) }}</span>
+                <span v-if="item.bm25_score !== undefined">bm25={{ formatScore(item.bm25_score) }}</span>
+                <span v-if="item.bm25_raw_score !== undefined">bm25_raw={{ formatScore(item.bm25_raw_score) }}</span>
+                <span v-if="item.keyword_score !== undefined">keyword={{ formatScore(item.keyword_score) }}</span>
                 <span>metadata={{ formatScore(item.metadata_score) }}</span>
                 <span>{{ item.included_in_answer_context === false ? "预算外" : "进入回答" }}</span>
               </div>
@@ -51,6 +55,7 @@
                 <strong>{{ trace.trace_id }}</strong>
                 <span>{{ trace.retriever || "-" }}</span>
                 <span>top_k={{ trace.top_k || "-" }}</span>
+                <span v-if="trace.fusion_strategy">{{ trace.fusion_strategy }}</span>
               </div>
               <div class="evidence-meta">
                 <span>answer={{ trace.answer_mode || "-" }}</span>

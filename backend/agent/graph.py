@@ -380,7 +380,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
                     "tool": name,
                     "summary": summary,
                     "data_source": (
-                        "backend.rag.knowledge_base.md via FAISS/BGE or keyword fallback"
+                        "backend.rag.knowledge_base.md via hybrid FAISS/BGE + BM25 retrieval"
                         if name == "retrieve_defect_knowledge"
                         else "backend.tools.defect_tools deterministic result"
                     ),

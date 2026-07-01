@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +16,11 @@ INDEX_DIR = Path(os.getenv("RAG_INDEX_DIR", Path(__file__).resolve().parent / "f
 INDEX_PATH = INDEX_DIR / "knowledge.index"
 METADATA_PATH = INDEX_DIR / "knowledge_meta.json"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+DEFAULT_RETRIEVER_MODE = "hybrid"
+BM25_K1 = 1.5
+BM25_B = 0.75
+RRF_K = 60
+RRF_SCORE_SCALE = 10.0
 
 DOMAIN_TERMS = [
     "裂纹",
@@ -73,11 +80,11 @@ INTENT_KEYWORDS = {
     "uncertain_cause": ["一定", "必然", "确认", "导致的吗", "是不是", "能否判定", "能不能判定"],
     "severity": ["等级", "严重", "危险", "critical", "major", "minor", "高风险"],
     "standard": ["标准", "判定", "规则", "依据"],
-    "review": ["复核", "闭环", "人工", "确认", "优先", "人工确认", "要不要处理"],
+    "review": ["复核", "闭环", "人工", "确认", "优先", "人工确认", "要不要处理", "关注"],
     "false_positive": ["误检", "阈值", "反光", "照明", "看错", "系统看错"],
     "spatial": ["集中", "位置", "头部", "中部", "尾部", "边部", "中心", "空间", "分布"],
     "report": ["报告", "模板", "怎么写", "写进报告"],
-    "answer_style": ["回答规范", "注意什么", "不要", "凭空", "审慎"],
+    "answer_style": ["回答规范", "注意什么", "不能直接", "凭空", "审慎"],
     "quality": ["质量", "异常", "炉号", "计划号", "方坯", "NG"],
 }
 
@@ -112,7 +119,7 @@ INTENT_REWRITE_PHRASES = {
 REQUIRED_EVIDENCE_BY_INTENT = {
     "root_cause": {"root_cause_checklist"},
     "uncertain_cause": {"root_cause_checklist", "answer_rule", "review_loop"},
-    "severity": {"severity_rule"},
+    "severity": {"severity_rule", "answer_rule"},
     "standard": {"surface_standard"},
     "review": {"review_loop"},
     "false_positive": {"defect_explanation", "answer_rule", "review_loop"},
@@ -153,6 +160,11 @@ _MODEL_CACHE: Dict[str, Any] = {}
 
 def _embedding_model_name(model_name: Optional[str] = None) -> str:
     return model_name or os.getenv("EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL)
+
+
+def _retriever_mode() -> str:
+    mode = os.getenv("RAG_RETRIEVER_MODE", DEFAULT_RETRIEVER_MODE).strip().lower()
+    return mode if mode in {"hybrid", "faiss", "bm25"} else DEFAULT_RETRIEVER_MODE
 
 
 def _load_chunks(kb_path: Path = KB_PATH) -> List[Dict[str, Any]]:
@@ -358,6 +370,9 @@ def _with_rank(
     if retriever == "faiss_bge":
         item["dense_rank"] = rank
         item["dense_score"] = round(float(score), 4)
+    if retriever in {"bm25", "bm25_fallback"}:
+        item["bm25_rank"] = rank
+        item["bm25_score"] = round(float(score), 4)
     if retriever == "keyword_fallback":
         item["keyword_rank"] = rank
         item["keyword_score"] = round(float(score), 4)
@@ -456,6 +471,8 @@ def _required_evidence_types(query_profile: Dict[str, Any]) -> List[str]:
         required.extend(REQUIRED_EVIDENCE_BY_INTENT.get(intent, set()))
     if not required and intents:
         required.append("answer_rule")
+    if defect_types and any(token in raw_query for token in ["关注", "重点关注", "集中出现", "集中"]):
+        required.extend(["root_cause_checklist", "review_loop"])
     if "surface_standard" in required and defect_types and any(
         intent in intents for intent in ["severity", "review", "uncertain_cause"]
     ):
@@ -594,9 +611,13 @@ def _compact_retrieval_rounds(retrieval_rounds: List[Dict[str, Any]]) -> List[Di
                             "rank": item.get("rank"),
                             "doc_id": item.get("doc_id"),
                             "title": item.get("title"),
+                            "retriever": item.get("retriever"),
                             "evidence_type": item.get("evidence_type"),
                             "score": item.get("score"),
                             "dense_score": item.get("dense_score"),
+                            "bm25_score": item.get("bm25_score"),
+                            "bm25_raw_score": item.get("bm25_raw_score"),
+                            "fusion_score": item.get("fusion_score"),
                             "metadata_score": item.get("metadata_score"),
                             "rerank_score": item.get("rerank_score"),
                         }
@@ -673,6 +694,9 @@ def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) 
             if category == "defect_type" or len(chunk_defects) == 1:
                 score += 0.38
                 reasons.append("缺陷类型匹配")
+                if chunk.get("evidence_type") == "defect_explanation":
+                    score += 0.95
+                    reasons.append("具体缺陷说明作为回答锚点")
             else:
                 score += 0.12
                 reasons.append("通用规则覆盖该缺陷类型")
@@ -749,7 +773,7 @@ def _metadata_match_score(query_profile: Dict[str, Any], chunk: Dict[str, Any]) 
         reasons.append("显式命中空间分布规则")
 
     if chunk.get("evidence_type") == "answer_rule" and any(
-        token in raw_query for token in ["回答规范", "注意什么", "谨慎表述", "不能直接", "不要"]
+        token in raw_query for token in ["回答规范", "注意什么", "谨慎表述", "不能直接", "不要凭空"]
     ):
         score += 0.16
         reasons.append("显式命中回答规范")
@@ -882,11 +906,21 @@ def _rerank_results(
     required_evidence_types: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     query_profile = query_profile or analyze_rag_query(query)
+    required_set = set(required_evidence_types or [])
     ranked: List[Dict[str, Any]] = []
     for candidate in candidates:
         item = dict(candidate)
-        base_score = float(item.get("dense_score", item.get("keyword_score", item.get("score", 0.0))) or 0.0)
+        base_score = float(
+            item.get(
+                "fusion_score",
+                item.get("dense_score", item.get("bm25_score", item.get("keyword_score", item.get("score", 0.0)))),
+            )
+            or 0.0
+        )
         metadata_score, reasons = _metadata_match_score(query_profile, item)
+        if item.get("evidence_type") in required_set:
+            metadata_score += 0.18
+            reasons.append("必需证据类型")
         rerank_score = base_score + metadata_score
         item["query_profile"] = query_profile
         item["metadata_score"] = round(metadata_score, 4)
@@ -898,7 +932,13 @@ def _rerank_results(
     ranked.sort(
         key=lambda item: (
             float(item.get("rerank_score", 0.0)),
-            float(item.get("dense_score", item.get("keyword_score", 0.0))),
+            float(
+                item.get(
+                    "fusion_score",
+                    item.get("dense_score", item.get("bm25_score", item.get("keyword_score", 0.0))),
+                )
+                or 0.0
+            ),
         ),
         reverse=True,
     )
@@ -935,10 +975,18 @@ def build_rag_trace(
             "rank": item.get("rank"),
             "raw_rank": item.get("raw_rank"),
             "dense_rank": item.get("dense_rank"),
+            "bm25_rank": item.get("bm25_rank"),
+            "fusion_rank": item.get("fusion_rank"),
             "doc_id": doc_id,
             "title": item.get("title"),
             "score": score,
             "dense_score": item.get("dense_score"),
+            "bm25_score": item.get("bm25_score"),
+            "bm25_raw_score": item.get("bm25_raw_score"),
+            "fusion_score": item.get("fusion_score"),
+            "fusion_rrf_score": item.get("fusion_rrf_score"),
+            "fusion_strategy": item.get("fusion_strategy"),
+            "fusion_components": item.get("fusion_components", {}),
             "keyword_score": item.get("keyword_score"),
             "metadata_score": item.get("metadata_score"),
             "rerank_score": item.get("rerank_score"),
@@ -975,6 +1023,7 @@ def build_rag_trace(
         "original_query": query,
         "retriever": top.get("retriever") or "none",
         "embedding_model": top.get("embedding_model"),
+        "fusion_strategy": top.get("fusion_strategy"),
         "top_k": top_k,
         "retrieved_candidates": candidates,
         "selected_doc_ids": doc_ids,
@@ -1045,6 +1094,186 @@ def _retrieve_with_faiss(query: str, top_k: int, model_name: str) -> List[Dict[s
     return results
 
 
+def _cjk_ngrams(text: str, n: int) -> List[str]:
+    output: List[str] = []
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(run) < n:
+            continue
+        output.extend(run[index : index + n] for index in range(len(run) - n + 1))
+    return output
+
+
+def _bm25_terms(text: str) -> List[str]:
+    normalized = str(text or "").lower()
+    terms: List[str] = []
+
+    for term in DOMAIN_TERMS:
+        lower = term.lower()
+        count = normalized.count(lower)
+        if count > 0:
+            terms.extend([lower] * min(count, 8))
+
+    for token in re.findall(r"[a-z0-9_]+", normalized):
+        if len(token) >= 2:
+            terms.append(token)
+
+    terms.extend(_cjk_ngrams(normalized, 2))
+    terms.extend(_cjk_ngrams(normalized, 3))
+    return terms
+
+
+def _build_bm25_index(
+    chunks: List[Dict[str, Any]],
+) -> Tuple[List[Tuple[Dict[str, Any], Counter[str], int]], Dict[str, int], float]:
+    indexed: List[Tuple[Dict[str, Any], Counter[str], int]] = []
+    document_frequency: Dict[str, int] = {}
+    total_terms = 0
+
+    for chunk in chunks:
+        terms = _bm25_terms(_chunk_text(chunk))
+        counts: Counter[str] = Counter(terms)
+        doc_len = max(len(terms), 1)
+        indexed.append((chunk, counts, doc_len))
+        total_terms += doc_len
+        for term in counts:
+            document_frequency[term] = document_frequency.get(term, 0) + 1
+
+    avg_doc_len = total_terms / len(indexed) if indexed else 1.0
+    return indexed, document_frequency, avg_doc_len
+
+
+def _bm25_score(
+    query_terms: List[str],
+    term_counts: Counter[str],
+    doc_len: int,
+    avg_doc_len: float,
+    document_frequency: Dict[str, int],
+    doc_count: int,
+) -> float:
+    if not query_terms or not term_counts or doc_count <= 0:
+        return 0.0
+
+    score = 0.0
+    avg_len = max(avg_doc_len, 1.0)
+    for term in set(query_terms):
+        term_frequency = term_counts.get(term, 0)
+        if term_frequency <= 0:
+            continue
+        doc_frequency = document_frequency.get(term, 0)
+        idf = math.log(1.0 + (doc_count - doc_frequency + 0.5) / (doc_frequency + 0.5))
+        numerator = term_frequency * (BM25_K1 + 1.0)
+        denominator = term_frequency + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len / avg_len)
+        score += idf * numerator / denominator
+    return score
+
+
+def _retrieve_with_bm25(
+    query: str,
+    top_k: int,
+    retriever: str = "bm25",
+    vector_error: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    chunks = _load_chunks()
+    indexed, document_frequency, avg_doc_len = _build_bm25_index(chunks)
+    query_profile = analyze_rag_query(query)
+    rewrite = rewrite_rag_query(query, query_profile)
+    expanded_query = f"{query} {rewrite.get('rewritten_query', '')}".strip()
+    query_terms = _bm25_terms(expanded_query)
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+
+    for chunk, term_counts, doc_len in indexed:
+        score = _bm25_score(query_terms, term_counts, doc_len, avg_doc_len, document_frequency, len(indexed))
+        if score > 0:
+            scored.append((score, chunk))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    max_score = scored[0][0] if scored else 1.0
+    results: List[Dict[str, Any]] = []
+    for index, (score, chunk) in enumerate(scored[:top_k], start=1):
+        normalized_score = score / max_score if max_score > 0 else 0.0
+        item = _with_rank(
+            chunk,
+            rank=index,
+            score=normalized_score,
+            retriever=retriever,
+            vector_error=vector_error,
+        )
+        item["bm25_raw_score"] = round(float(score), 4)
+        results.append(item)
+    return results
+
+
+def _fuse_hybrid_results(
+    dense_results: List[Dict[str, Any]],
+    bm25_results: List[Dict[str, Any]],
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    def ensure_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        doc_id = str(item.get("doc_id") or "")
+        current = merged.get(doc_id)
+        if current is None:
+            current = dict(item)
+            current["_fusion_rrf_score"] = 0.0
+            current["fusion_components"] = {}
+            merged[doc_id] = current
+        return current
+
+    for item in dense_results:
+        rank = int(item.get("dense_rank") or item.get("rank") or 0)
+        if rank <= 0:
+            continue
+        current = ensure_item(item)
+        current["_fusion_rrf_score"] += 1.0 / (RRF_K + rank)
+        current["dense_rank"] = rank
+        current["dense_score"] = item.get("dense_score", item.get("score"))
+        current["embedding_model"] = item.get("embedding_model")
+        current["fusion_components"]["faiss_bge"] = {
+            "rank": rank,
+            "score": current.get("dense_score"),
+        }
+
+    for item in bm25_results:
+        rank = int(item.get("bm25_rank") or item.get("rank") or 0)
+        if rank <= 0:
+            continue
+        current = ensure_item(item)
+        current["_fusion_rrf_score"] += 1.0 / (RRF_K + rank)
+        current["bm25_rank"] = rank
+        current["bm25_score"] = item.get("bm25_score", item.get("score"))
+        current["fusion_components"]["bm25"] = {
+            "rank": rank,
+            "score": current.get("bm25_score"),
+            "raw_score": item.get("bm25_raw_score"),
+        }
+
+    ranked = list(merged.values())
+    ranked.sort(
+        key=lambda item: (
+            float(item.get("_fusion_rrf_score", 0.0)),
+            float(item.get("dense_score", 0.0) or 0.0),
+            float(item.get("bm25_score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+
+    output: List[Dict[str, Any]] = []
+    for rank, item in enumerate(ranked[:top_k], start=1):
+        updated = dict(item)
+        rrf_score = float(updated.pop("_fusion_rrf_score", 0.0))
+        updated["rank"] = rank
+        updated["raw_rank"] = rank
+        updated["fusion_rank"] = rank
+        updated["fusion_rrf_score"] = round(rrf_score, 6)
+        updated["fusion_score"] = round(rrf_score * RRF_SCORE_SCALE, 4)
+        updated["score"] = updated["fusion_score"]
+        updated["retriever"] = "hybrid_faiss_bm25"
+        updated["fusion_strategy"] = "reciprocal_rank_fusion"
+        output.append(updated)
+    return output
+
+
 def _query_terms(query: str) -> List[str]:
     terms: List[str] = []
     for term in DOMAIN_TERMS:
@@ -1104,7 +1333,7 @@ def _candidate_pool_size(top_k: int) -> int:
 
 
 def retrieve_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Retrieve defect-domain knowledge. FAISS+BGE is used when available; keyword fallback keeps demos offline."""
+    """Retrieve defect-domain knowledge with hybrid FAISS/BGE + BM25 when available."""
     query = (query or "").strip()
     if not query:
         return []
@@ -1112,15 +1341,35 @@ def retrieve_knowledge(query: str, top_k: int = 3, model_name: Optional[str] = N
     top_k = max(1, min(int(top_k or 3), 10))
     model_name = _embedding_model_name(model_name)
     candidate_k = _candidate_pool_size(top_k)
+    retriever_mode = _retriever_mode()
 
-    try:
-        results = _retrieve_with_faiss(query, candidate_k, model_name)
+    if retriever_mode == "bm25":
+        results = _retrieve_with_bm25(query, candidate_k, retriever="bm25")
         if results:
             return _rerank_results(query, results, top_k)
+        results = _retrieve_with_keywords(query, candidate_k)
+        return _rerank_results(query, results, top_k)
+
+    try:
+        dense_results = _retrieve_with_faiss(query, candidate_k, model_name)
+        if dense_results and retriever_mode == "faiss":
+            return _rerank_results(query, dense_results, top_k)
+        if dense_results:
+            bm25_results = _retrieve_with_bm25(query, candidate_k, retriever="bm25")
+            fused_results = _fuse_hybrid_results(dense_results, bm25_results, candidate_k)
+            if fused_results:
+                return _rerank_results(query, fused_results, top_k)
+            return _rerank_results(query, dense_results, top_k)
     except Exception as exc:
+        results = _retrieve_with_bm25(query, candidate_k, retriever="bm25_fallback", vector_error=str(exc))
+        if results:
+            return _rerank_results(query, results, top_k)
         results = _retrieve_with_keywords(query, candidate_k, vector_error=str(exc))
         return _rerank_results(query, results, top_k)
 
+    results = _retrieve_with_bm25(query, candidate_k, retriever="bm25_fallback")
+    if results:
+        return _rerank_results(query, results, top_k)
     results = _retrieve_with_keywords(query, candidate_k)
     return _rerank_results(query, results, top_k)
 
@@ -1236,6 +1485,9 @@ def get_rag_status() -> Dict[str, Any]:
         "index_exists": INDEX_PATH.exists() and METADATA_PATH.exists(),
         "chunk_count": len(chunks),
         "embedding_model": _embedding_model_name(),
+        "retriever_mode": _retriever_mode(),
+        "bm25_available": True,
+        "hybrid_available": True,
         "faiss_available": importlib.util.find_spec("faiss") is not None,
         "sentence_transformers_available": importlib.util.find_spec("sentence_transformers") is not None,
         "numpy_available": importlib.util.find_spec("numpy") is not None,
