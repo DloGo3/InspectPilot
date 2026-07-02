@@ -64,6 +64,13 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业视觉�
 - 诊断回答约束：不允许只根据缺陷数量、单条记录或空间集中直接判定质量事故/工艺事故；涉及判废、停线、复检必须建议人工确认
 - `eval_runner.py` 新增诊断指标：`diagnosis_intent_accuracy`、`required_tool_coverage`、`root_cause_accuracy`、`evidence_keyword_coverage`、`unsafe_claim_rate`
 
+## v0.4.1 Diagnostic Planner Guardrails
+
+- 诊断类问题不再完全信任 LLM 自由选择工具；只要意图识别为 `diagnosis`，planner 输出会被规范为固定诊断工具链：`detect_defect_spike`、`analyze_defect_camera_concentration`、`analyze_camera_health`、`analyze_image_quality`、`estimate_false_positive_risk`
+- 诊断工具参数会统一使用项目内置诊断窗口，避免 LLM 将 “10 点后” 错缩成 `10:00-10:02` 这类过窄窗口，导致样本数不足和误判
+- 诊断类 RAG 检索至少拉取 5 条知识片段，确保回答能覆盖缺陷说明、复核闭环、表面判定标准和原因排查清单
+- 诊断答案以 `estimate_false_positive_risk` 的结构化结果为准，LLM 不再覆盖工具给出的根因、风险等级和建议动作
+
 ## 启动后端
 
 ```powershell

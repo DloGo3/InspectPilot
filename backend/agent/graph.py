@@ -15,7 +15,7 @@ from agent.tool_registry import (
 )
 from config import get_settings
 from tools.defect_tools import get_latest_timestamp
-from tools.diagnostic_tools import DEFAULT_ANALYSIS_START, DEFAULT_SCENARIO_ID, DEFAULT_TARGET_END
+from tools.diagnostic_tools import DEFAULT_ANALYSIS_START, DEFAULT_DEFECT_TYPE, DEFAULT_SCENARIO_ID, DEFAULT_TARGET_END
 
 try:
     from langgraph.graph import END, StateGraph
@@ -146,26 +146,80 @@ def _diagnostic_camera(question: str, scenario_id: str) -> Optional[str]:
     return None
 
 
-def _rag_tool_call(question: str) -> Dict[str, Any]:
+def _rag_tool_call(question: str, min_top_k: Optional[int] = None) -> Dict[str, Any]:
     settings = get_settings()
+    top_k = settings.rag_top_k
+    if min_top_k is not None:
+        top_k = max(top_k, min_top_k)
     return {
         "name": "retrieve_defect_knowledge",
-        "arguments": {"query": question, "top_k": settings.rag_top_k},
+        "arguments": {"query": question, "top_k": top_k},
         "source": "auto_rag",
     }
 
 
-def _ensure_rag_tool_call(question: str, planned: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _ensure_rag_tool_call(
+    question: str,
+    planned: List[Dict[str, Any]],
+    min_top_k: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     settings = get_settings()
+    desired_top_k = settings.rag_top_k
+    if min_top_k is not None:
+        desired_top_k = max(desired_top_k, min_top_k)
     for call in planned:
         if call.get("name") == "retrieve_defect_knowledge":
             arguments = call.setdefault("arguments", {})
             if not arguments.get("query"):
                 arguments["query"] = question
-            if not arguments.get("top_k"):
-                arguments["top_k"] = settings.rag_top_k
+            try:
+                current_top_k = int(arguments.get("top_k") or 0)
+            except (TypeError, ValueError):
+                current_top_k = 0
+            if current_top_k < desired_top_k:
+                arguments["top_k"] = desired_top_k
             return planned
-    return planned + [_rag_tool_call(question)]
+    return planned + [_rag_tool_call(question, min_top_k=min_top_k)]
+
+
+def _diagnostic_tool_args(question: str, tool_name: str) -> Dict[str, Any]:
+    filters = extract_filters(question)
+    scenario_id = _diagnostic_scenario(question)
+    camera_id = _diagnostic_camera(question, scenario_id)
+    payload: Dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "defect_type": filters.get("defect_type", DEFAULT_DEFECT_TYPE),
+        "analysis_start": DEFAULT_ANALYSIS_START,
+        "target_end": DEFAULT_TARGET_END,
+    }
+    if tool_name in {"analyze_camera_health", "analyze_image_quality", "estimate_false_positive_risk"}:
+        payload["camera_id"] = camera_id
+    return payload
+
+
+def _diagnostic_tool_block(question: str) -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "arguments": _diagnostic_tool_args(question, name),
+            "source": "auto_diagnostic_guardrail",
+        }
+        for name in [
+            "detect_defect_spike",
+            "analyze_defect_camera_concentration",
+            "analyze_camera_health",
+            "analyze_image_quality",
+            "estimate_false_positive_risk",
+        ]
+    ]
+
+
+def _ensure_diagnostic_tool_calls(question: str, planned: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if infer_intent(question) != "diagnosis":
+        return planned
+
+    non_diagnostic = [call for call in planned if call.get("name") not in DIAGNOSTIC_TOOL_NAMES]
+    return _diagnostic_tool_block(question) + non_diagnostic
 
 
 def _fallback_tool_plan(question: str) -> List[Dict[str, Any]]:
@@ -180,14 +234,17 @@ def _fallback_tool_plan(question: str) -> List[Dict[str, Any]]:
         return payload
 
     def finalize(calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return _ensure_rag_tool_call(question, calls) if should_use_rag(question, intent) else calls
+        if not should_use_rag(question, intent):
+            return calls
+        min_top_k = 5 if intent == "diagnosis" else None
+        return _ensure_rag_tool_call(question, calls, min_top_k=min_top_k)
 
     if intent == "diagnosis":
         scenario_id = _diagnostic_scenario(question)
         camera_id = _diagnostic_camera(question, scenario_id)
         diagnostic_args: Dict[str, Any] = {
             "scenario_id": scenario_id,
-            "defect_type": filters.get("defect_type", "裂纹"),
+            "defect_type": filters.get("defect_type", DEFAULT_DEFECT_TYPE),
             "analysis_start": DEFAULT_ANALYSIS_START,
             "target_end": DEFAULT_TARGET_END,
         }
@@ -351,8 +408,10 @@ def plan_tool_calls_node(state: AgentState) -> AgentState:
         else:
             state["planner_mode"] = "llm"
             state["llm_used"] = True
+        planned = _ensure_diagnostic_tool_calls(question, planned)
         if state.get("need_rag"):
-            planned = _ensure_rag_tool_call(question, planned)
+            min_top_k = 5 if state.get("intent") == "diagnosis" else None
+            planned = _ensure_rag_tool_call(question, planned, min_top_k=min_top_k)
         state["planned_tool_calls"] = planned
     except Exception as exc:
         state["planned_tool_calls"] = _fallback_tool_plan(question)
@@ -587,6 +646,11 @@ def generate_answer_node(state: AgentState) -> AgentState:
         warnings = list(state.get("warnings", []))
         warnings.append("no_tool_data;answer_guardrail_triggered")
         state["warnings"] = warnings
+        return state
+
+    if state.get("intent") == "diagnosis" and state.get("diagnosis"):
+        state["answer"] = _format_diagnostic_answer(state["diagnosis"])
+        state["answer_mode"] = "diagnostic_guardrail"
         return state
 
     settings = get_settings()
