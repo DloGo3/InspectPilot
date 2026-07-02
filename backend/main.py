@@ -20,7 +20,7 @@ from tools.defect_tools import (
 app = FastAPI(
     title="InspectPilot API",
     description="Industrial vision defect analysis Agent for billet surface inspection results.",
-    version="0.3.3",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -63,6 +63,7 @@ def agent_chat(payload: ChatRequest):
         need_rag=state.get("need_rag", False),
         kb_evidence=state.get("kb_evidence", []),
         rag_trace=state.get("rag_trace", []),
+        diagnosis=state.get("diagnosis", {}),
         tool_results=state.get("tool_results", {}),
         report_path=state.get("report_path"),
     )

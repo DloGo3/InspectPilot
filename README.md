@@ -1,12 +1,12 @@
 # InspectPilot
 
-InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷分析 Agent。v0.3 在确定性统计工具和 LLM Tool Calling 工作流之上，加入 FAISS/BGE 向量 RAG：LLM 只负责理解问题、选择受控 tools、基于工具结果和知识库证据生成中文结论，不直接查询数据库或生成 SQL。
+InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业视觉质检异常诊断 Agent。v0.3 在确定性统计工具和 LLM Tool Calling 工作流之上，加入 FAISS/BGE 向量 RAG；v0.4 开始从“查缺陷结果/知识问答”升级为“诊断异常原因”：LLM 只负责理解问题、选择受控 tools、基于工具结果和知识库证据生成中文结论，不直接查询数据库或生成 SQL。
 
 ## 项目定位
 
-- 项目名称：InspectPilot - 方坯表面缺陷分析 Agent
-- 项目类型：工业视觉缺陷分析 Agent，不是普通聊天机器人
-- 简历关键词：FastAPI、LangGraph、OpenAI Tool Calling、RAG、SQLite/MySQL、FAISS/BGE、工业视觉检测、质量分析、缺陷空间分布
+- 项目名称：InspectPilot - 工业视觉质检异常诊断 Agent
+- 项目类型：工业视觉缺陷分析与异常诊断 Agent，不是普通聊天机器人
+- 简历关键词：FastAPI、LangGraph、OpenAI Tool Calling、RAG、SQLite/MySQL、FAISS/BGE、工业视觉检测、异常诊断、质量追溯、相机健康分析、误检风险评估
 
 ## v0.3 能力
 
@@ -50,6 +50,19 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业缺陷�
 - 现有 business rerank、Evidence Budget、Evidence Judge 保持在融合召回之后继续生效，避免单纯词面命中挤掉业务必需证据
 - `RAG_RETRIEVER_MODE` 支持 `hybrid`、`faiss`、`bm25` 三种模式，便于对比召回策略和离线演示
 - 前端参考知识和 RAG Trace 展示 BM25 / fusion 字段；`eval_runner.py` 输出 retriever 使用分布、BM25 使用率和 hybrid 使用率
+
+## v0.4.0 Diagnostic Agent
+
+- 项目定位从“缺陷统计 + RAG 知识问答”升级为“工业视觉质检异常诊断 Agent”
+- 新增诊断 mock 数据表：`defect_events`、`camera_status`、`image_quality_metrics`
+- 构造三类诊断场景：
+  - `camera2_imaging_abnormal`：10:00 后裂纹突增，集中在 CAM02/right/head-edge，同时 FPS 下降、亮度下降、黑帧/空帧升高、低置信度框增多；期望诊断为相机成像异常/误检风险更高
+  - `multi_camera_quality_wave`：10:00 后多相机、多位置、多方坯同步裂纹增多，图像质量和相机状态基本正常；期望诊断为真实质量波动风险更高
+  - `sparse_evidence`：只有单条裂纹记录且缺少相机/图像质量证据；期望诊断为证据不足，不能硬判根因
+- 新增确定性诊断工具：`detect_defect_spike`、`analyze_defect_camera_concentration`、`analyze_camera_health`、`analyze_image_quality`、`estimate_false_positive_risk`
+- 诊断类问题自动输出固定结构：`【结论】`、`【关键证据】`、`【可能原因排序】`、`【建议动作】`、`【仍需补充的数据】`
+- 诊断回答约束：不允许只根据缺陷数量、单条记录或空间集中直接判定质量事故/工艺事故；涉及判废、停线、复检必须建议人工确认
+- `eval_runner.py` 新增诊断指标：`diagnosis_intent_accuracy`、`required_tool_coverage`、`root_cause_accuracy`、`evidence_keyword_coverage`、`unsafe_claim_rate`
 
 ## 启动后端
 
@@ -140,6 +153,9 @@ python evals\eval_runner.py --mode llm --allow-fallback
 - 裂纹为什么需要重点关注？
 - 缺陷等级规则是什么？
 - 生成一份缺陷统计与空间分布分析报告。
+- 今天 10 点后裂纹突然增多，请判断是真实质量异常，还是检测系统异常。
+- 今天 10 点后多相机同步增加裂纹，图像质量正常，请判断是不是检测系统误检。
+- 只有一条裂纹记录，而且没有相机状态，能判断根因吗？
 
 ## 启动前端
 

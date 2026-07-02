@@ -13,6 +13,17 @@ from tools.defect_tools import (
     query_defect_stats,
     query_defects_by_furnace,
 )
+from tools.diagnostic_tools import (
+    DEFAULT_ANALYSIS_START,
+    DEFAULT_DEFECT_TYPE,
+    DEFAULT_SCENARIO_ID,
+    DEFAULT_TARGET_END,
+    analyze_camera_health,
+    analyze_defect_camera_concentration,
+    analyze_image_quality,
+    detect_defect_spike,
+    estimate_false_positive_risk,
+)
 from rag.retriever import retrieve_agentic_knowledge
 
 ALLOWED_FILTERS = {
@@ -29,6 +40,13 @@ ALLOWED_FACES = {"top", "right", "bottom", "left"}
 ALLOWED_LENGTH_REGIONS = {"head", "middle", "tail"}
 ALLOWED_WIDTH_REGIONS = {"edge", "center"}
 ALLOWED_SEVERITY = {"minor", "major", "critical"}
+DIAGNOSTIC_TOOL_NAMES = {
+    "detect_defect_spike",
+    "analyze_defect_camera_concentration",
+    "analyze_camera_health",
+    "analyze_image_quality",
+    "estimate_false_positive_risk",
+}
 
 def retrieve_defect_knowledge_tool(query: str, top_k: int = 3) -> Dict[str, Any]:
     return retrieve_agentic_knowledge(query=query, top_k=top_k)
@@ -44,6 +62,11 @@ TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "get_defect_images": get_defect_images,
     "generate_defect_report": generate_defect_report,
     "retrieve_defect_knowledge": retrieve_defect_knowledge_tool,
+    "detect_defect_spike": detect_defect_spike,
+    "analyze_defect_camera_concentration": analyze_defect_camera_concentration,
+    "analyze_camera_health": analyze_camera_health,
+    "analyze_image_quality": analyze_image_quality,
+    "estimate_false_positive_risk": estimate_false_positive_risk,
 }
 
 FILTER_SCHEMA = {
@@ -104,6 +127,11 @@ _TOOL_DESCRIPTIONS = {
     "get_defect_images": "Return image evidence paths for matching defect records.",
     "generate_defect_report": "Generate a Markdown defect statistics and spatial distribution report.",
     "retrieve_defect_knowledge": "Retrieve defect-domain knowledge from the hybrid FAISS/BGE + BM25 RAG knowledge base. Use for 原因、标准、等级、规则、判定、报告模板、复核建议 or defect explanations.",
+    "detect_defect_spike": "Detect whether a defect type has spiked after a given time compared with a baseline window.",
+    "analyze_defect_camera_concentration": "Analyze whether defect events are concentrated in one camera or distributed across cameras.",
+    "analyze_camera_health": "Analyze target camera FPS, brightness, temperature, black frames, and empty frames.",
+    "analyze_image_quality": "Analyze target camera image brightness, blur score, black ratio, and edge-box concentration.",
+    "estimate_false_positive_risk": "Combine defect spike, camera concentration, camera health, and image quality to estimate false-positive risk vs true quality wave.",
 }
 
 for _name, _description in _TOOL_DESCRIPTIONS.items():
@@ -129,6 +157,20 @@ for _name, _description in _TOOL_DESCRIPTIONS.items():
                 "description": "Original user question or concise retrieval query about defect knowledge.",
             },
             "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+        }
+    elif _name in DIAGNOSTIC_TOOL_NAMES:
+        include_common = False
+        extra_schema = {
+            "scenario_id": {
+                "type": "string",
+                "description": "Diagnostic mock scenario id. Default camera2_imaging_abnormal.",
+            },
+            "defect_type": {"type": "string", "description": "Chinese defect type, default 裂纹."},
+            "camera_id": {"type": "string", "description": "Optional target camera id, e.g. CAM02."},
+            "analysis_start": {"type": "string", "description": "ISO timestamp when the anomaly starts."},
+            "baseline_start": {"type": "string", "description": "Optional baseline window start."},
+            "baseline_end": {"type": "string", "description": "Optional baseline window end."},
+            "target_end": {"type": "string", "description": "Optional target window end."},
         }
 
     tool_schema = _schema(_description, extra_schema, include_common=include_common)
@@ -225,6 +267,30 @@ def sanitize_tool_arguments(tool_name: str, raw_args: Dict[str, Any]) -> Tuple[D
             warnings,
         )
 
+    if tool_name in DIAGNOSTIC_TOOL_NAMES:
+        scenario_id = str(raw_args.get("scenario_id") or DEFAULT_SCENARIO_ID).strip() or DEFAULT_SCENARIO_ID
+        defect_type = str(raw_args.get("defect_type") or DEFAULT_DEFECT_TYPE).strip() or DEFAULT_DEFECT_TYPE
+        analysis_start = str(raw_args.get("analysis_start") or DEFAULT_ANALYSIS_START).strip() or DEFAULT_ANALYSIS_START
+        target_end = str(raw_args.get("target_end") or DEFAULT_TARGET_END).strip() or DEFAULT_TARGET_END
+        baseline_start = raw_args.get("baseline_start")
+        baseline_end = raw_args.get("baseline_end")
+        camera_id = raw_args.get("camera_id")
+        sanitized = {
+            "scenario_id": scenario_id,
+            "defect_type": defect_type,
+            "analysis_start": analysis_start,
+            "baseline_start": str(baseline_start).strip() if baseline_start else None,
+            "baseline_end": str(baseline_end).strip() if baseline_end else None,
+            "target_end": target_end,
+        }
+        if tool_name in {"analyze_camera_health", "analyze_image_quality", "estimate_false_positive_risk"}:
+            sanitized["camera_id"] = str(camera_id).strip() if camera_id else None
+        return (
+            sanitized,
+            {"preset": "diagnostic_window", "start_time": analysis_start, "end_time": target_end},
+            warnings,
+        )
+
     start_time, end_time, time_window = resolve_time_window(raw_args)
     filters, filter_warnings = sanitize_filters(raw_args.get("filters", {}))
     warnings.extend(filter_warnings)
@@ -293,6 +359,8 @@ def execute_registered_tool(tool_name: str, raw_args: Dict[str, Any]) -> Dict[st
 def result_has_data(tool_name: str, result: Dict[str, Any]) -> bool:
     if not result:
         return False
+    if tool_name in DIAGNOSTIC_TOOL_NAMES:
+        return result.get("status") not in {None, "no_data"}
     if tool_name == "query_defect_stats":
         return result.get("total_defects", 0) > 0
     if tool_name in {"group_defects_by_type", "group_defects_by_face", "query_defects_by_furnace"}:
@@ -352,6 +420,35 @@ def summarize_result(tool_name: str, result: Dict[str, Any]) -> str:
             f"检索到 {len(items)} 条知识片段，Top1={top.get('title')}，"
             f"检索器={top.get('retriever')}，rerank={top.get('rerank_score', top.get('score'))}，"
             f"证据充分={result.get('evidence_judge', {}).get('evidence_sufficient')}。"
+        )
+    if tool_name == "detect_defect_spike":
+        metrics = result.get("key_metrics", {})
+        return (
+            f"缺陷突增状态={result.get('status')}，目标窗口 "
+            f"{metrics.get('target_count', 0)} 条，基线 {metrics.get('baseline_count', 0)} 条。"
+        )
+    if tool_name == "analyze_defect_camera_concentration":
+        metrics = result.get("key_metrics", {})
+        return (
+            f"相机集中度={result.get('status')}，Top 相机 {metrics.get('top_camera')}，"
+            f"占比 {metrics.get('top_camera_ratio_pct')}%。"
+        )
+    if tool_name == "analyze_camera_health":
+        metrics = result.get("key_metrics", {})
+        return (
+            f"相机健康={result.get('status')}，{metrics.get('camera_id')} "
+            f"FPS下降 {metrics.get('fps_drop_pct')}%，亮度下降 {metrics.get('brightness_drop_pct')}%。"
+        )
+    if tool_name == "analyze_image_quality":
+        metrics = result.get("key_metrics", {})
+        return (
+            f"图像质量={result.get('status')}，{metrics.get('camera_id')} "
+            f"亮度 {metrics.get('avg_brightness')}，边缘框占比 {metrics.get('edge_box_ratio')}。"
+        )
+    if tool_name == "estimate_false_positive_risk":
+        return (
+            f"诊断结论：{result.get('summary')} "
+            f"root_cause={result.get('root_cause')}，false_positive_risk={result.get('false_positive_risk')}。"
         )
     return "工具已返回结果。"
 

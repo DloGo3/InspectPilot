@@ -5,6 +5,7 @@ from agent.llm_client import chat_completion, extract_json_object
 from agent.prompts import ANSWER_SYSTEM_PROMPT, TOOL_PLANNER_SYSTEM_PROMPT
 from agent.state import AgentState
 from agent.tool_registry import (
+    DIAGNOSTIC_TOOL_NAMES,
     TOOL_DEFINITIONS,
     compact_tool_results,
     execute_registered_tool,
@@ -14,6 +15,7 @@ from agent.tool_registry import (
 )
 from config import get_settings
 from tools.defect_tools import get_latest_timestamp
+from tools.diagnostic_tools import DEFAULT_ANALYSIS_START, DEFAULT_SCENARIO_ID, DEFAULT_TARGET_END
 
 try:
     from langgraph.graph import END, StateGraph
@@ -71,6 +73,21 @@ DEFECT_ANALYSIS_KEYWORDS = [
     "规则",
     "判定",
     "复核",
+    "突然增多",
+    "变多",
+    "异常",
+    "诊断",
+    "检测系统",
+    "相机",
+    "camera",
+    "CAM",
+    "成像",
+    "光照",
+    "FPS",
+    "fps",
+    "判废",
+    "停线",
+    "复检",
 ]
 
 HELP_KEYWORDS = ["你能做什么", "支持哪些问题", "怎么使用", "如何使用", "帮助", "help", "功能"]
@@ -108,6 +125,27 @@ def _time_window_preset(question: str) -> str:
     return "all"
 
 
+def _diagnostic_scenario(question: str) -> str:
+    q_lower = question.lower()
+    if any(word in question for word in ["证据不足", "只有一条", "单条", "没有相机状态", "缺少相机状态"]):
+        return "sparse_evidence"
+    if any(word in question for word in ["多相机", "多个相机", "多台相机", "同步增加", "同步升高", "图像质量正常"]):
+        return "multi_camera_quality_wave"
+    if "quality_wave" in q_lower:
+        return "multi_camera_quality_wave"
+    if "sparse" in q_lower:
+        return "sparse_evidence"
+    return DEFAULT_SCENARIO_ID
+
+
+def _diagnostic_camera(question: str, scenario_id: str) -> Optional[str]:
+    if any(word in question for word in ["CAM02", "camera2", "Camera2", "2号相机", "二号相机", "camera 2"]):
+        return "CAM02"
+    if scenario_id == DEFAULT_SCENARIO_ID:
+        return "CAM02"
+    return None
+
+
 def _rag_tool_call(question: str) -> Dict[str, Any]:
     settings = get_settings()
     return {
@@ -143,6 +181,27 @@ def _fallback_tool_plan(question: str) -> List[Dict[str, Any]]:
 
     def finalize(calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return _ensure_rag_tool_call(question, calls) if should_use_rag(question, intent) else calls
+
+    if intent == "diagnosis":
+        scenario_id = _diagnostic_scenario(question)
+        camera_id = _diagnostic_camera(question, scenario_id)
+        diagnostic_args: Dict[str, Any] = {
+            "scenario_id": scenario_id,
+            "defect_type": filters.get("defect_type", "裂纹"),
+            "analysis_start": DEFAULT_ANALYSIS_START,
+            "target_end": DEFAULT_TARGET_END,
+        }
+        diagnostic_args_with_camera = dict(diagnostic_args)
+        if camera_id:
+            diagnostic_args_with_camera["camera_id"] = camera_id
+        calls = [
+            {"name": "detect_defect_spike", "arguments": diagnostic_args},
+            {"name": "analyze_defect_camera_concentration", "arguments": diagnostic_args},
+            {"name": "analyze_camera_health", "arguments": diagnostic_args_with_camera},
+            {"name": "analyze_image_quality", "arguments": diagnostic_args_with_camera},
+            {"name": "estimate_false_positive_risk", "arguments": diagnostic_args_with_camera},
+        ]
+        return finalize(calls)
 
     if intent in {"general_stats", "recent_defects"}:
         return finalize([
@@ -189,6 +248,7 @@ def classify_user_scope_node(state: AgentState) -> AgentState:
     state["planned_tool_calls"] = []
     state["kb_evidence"] = []
     state["rag_trace"] = []
+    state["diagnosis"] = {}
     state["evidence"] = []
     state["warnings"] = []
     state["errors"] = []
@@ -216,6 +276,7 @@ def direct_answer_node(state: AgentState) -> AgentState:
     state["tool_results"] = {}
     state["kb_evidence"] = []
     state["rag_trace"] = []
+    state["diagnosis"] = {}
     state["evidence"] = []
     state["warnings"] = []
     state["planner_mode"] = "none"
@@ -328,6 +389,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
     evidence: List[Dict[str, Any]] = []
     kb_evidence: List[Dict[str, Any]] = []
     rag_trace: List[Dict[str, Any]] = []
+    diagnosis: Dict[str, Any] = {}
     warnings = list(state.get("warnings", []))
     filters = dict(state.get("filters", {}))
     time_window = dict(state.get("time_window", {}))
@@ -365,6 +427,8 @@ def execute_tools_node(state: AgentState) -> AgentState:
                     trace_warnings.append(warning)
             trace["warnings"] = trace_warnings
             rag_trace.append(trace)
+        if name == "estimate_false_positive_risk" and execution.get("ok", False):
+            diagnosis = result
         tool_calls.append(
             {
                 "name": name,
@@ -382,6 +446,8 @@ def execute_tools_node(state: AgentState) -> AgentState:
                     "data_source": (
                         "backend.rag.knowledge_base.md via hybrid FAISS/BGE + BM25 retrieval"
                         if name == "retrieve_defect_knowledge"
+                        else "backend.tools.diagnostic_tools deterministic diagnostic result"
+                        if name in DIAGNOSTIC_TOOL_NAMES
                         else "backend.tools.defect_tools deterministic result"
                     ),
                     "time_window": execution.get("time_window", {}),
@@ -395,6 +461,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
     state["tool_calls"] = tool_calls
     state["kb_evidence"] = kb_evidence
     state["rag_trace"] = rag_trace
+    state["diagnosis"] = diagnosis
     state["evidence"] = evidence
     state["warnings"] = warnings
     state["filters"] = filters
@@ -404,9 +471,63 @@ def execute_tools_node(state: AgentState) -> AgentState:
     return state
 
 
+def _format_diagnostic_answer(diagnosis: Dict[str, Any]) -> str:
+    conclusion = diagnosis.get("conclusion") or diagnosis.get("summary") or "当前数据不足以判断"
+    evidence = diagnosis.get("evidence") or []
+    candidates = diagnosis.get("root_cause_candidates") or []
+    actions = diagnosis.get("recommended_actions") or []
+    missing_data = diagnosis.get("missing_data") or []
+    metrics = diagnosis.get("key_metrics") or {}
+
+    lines = [
+        "【结论】",
+        conclusion,
+        "",
+        "【关键证据】",
+    ]
+    if evidence:
+        for index, item in enumerate(evidence[:6], start=1):
+            lines.append(f"{index}. {item}")
+    else:
+        lines.append("1. 当前没有足够诊断证据。")
+
+    if metrics:
+        scenario_id = metrics.get("scenario_id")
+        if scenario_id:
+            lines.append(f"{len(evidence[:6]) + 1 if evidence else 2}. 诊断场景：{scenario_id}")
+
+    lines.extend(["", "【可能原因排序】"])
+    if candidates:
+        for index, item in enumerate(candidates, start=1):
+            item_evidence = "；".join(item.get("evidence", [])[:3])
+            suffix = f"：{item_evidence}" if item_evidence else ""
+            lines.append(f"{index}. {item.get('name')}，可能性 {item.get('likelihood')}{suffix}")
+    else:
+        lines.append("1. 当前证据不足，不能可靠排序。")
+
+    lines.extend(["", "【建议动作】"])
+    if actions:
+        for index, item in enumerate(actions, start=1):
+            lines.append(f"{index}. {item}")
+    else:
+        lines.append("1. 先补齐原图、相机状态、图像质量和人工复核记录。")
+
+    lines.extend(["", "【仍需补充的数据】"])
+    if missing_data:
+        for index, item in enumerate(missing_data, start=1):
+            lines.append(f"{index}. {item}")
+    else:
+        lines.append("1. 人工复核结论和现场工艺记录。")
+
+    return "\n".join(lines)
+
+
 def _deterministic_answer(state: AgentState) -> str:
     if not state.get("evidence"):
         return "当前数据不足以判断"
+
+    if state.get("intent") == "diagnosis" and state.get("diagnosis"):
+        return _format_diagnostic_answer(state["diagnosis"])
 
     stats_evidence = [item for item in state.get("evidence", []) if item.get("tool") != "retrieve_defect_knowledge"]
     kb_evidence = _answer_kb_evidence(state.get("kb_evidence", []))
@@ -486,6 +607,7 @@ def generate_answer_node(state: AgentState) -> AgentState:
                 f"time_window：{state.get('time_window')}\n"
                 f"filters：{state.get('filters')}\n"
                 f"evidence：{state.get('evidence')}\n"
+                f"diagnosis：{state.get('diagnosis', {})}\n"
                 f"kb_evidence：{_answer_kb_evidence(state.get('kb_evidence', []))}\n"
                 f"tool_results：{compact_tool_results(_answer_tool_results(state.get('tool_results', {})))}\n"
                 "请输出 JSON：{\"answer\":\"...\",\"warnings\":[\"...\"]}"

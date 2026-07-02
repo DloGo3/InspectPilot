@@ -10,6 +10,7 @@ backend/pytest_tmp*/
 backend/.env
 backend/data/defects.db
 backend/data/test_defects_*.db
+backend/data/test_diagnostics_*.db
 backend/data/*.db-journal
 backend/rag/faiss_index/
 sqlite_probe.db

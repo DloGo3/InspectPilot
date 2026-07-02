@@ -98,6 +98,7 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     answer_mode = state.get("answer_mode", "fallback")
     llm_used = bool(state.get("llm_used", False))
     need_rag = bool(state.get("need_rag", False))
+    diagnosis = state.get("diagnosis", {}) or {}
     doc_ids = _kb_doc_ids(state)
     context_doc_ids = _kb_context_doc_ids(state)
     top_doc_id = doc_ids[0] if doc_ids else None
@@ -110,6 +111,21 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     forbidden_tools = [tool for tool in must_not_tools if tool in tool_names]
     missing_text = [text for text in case.get("must_contain", []) if text not in answer]
     forbidden_text = [text for text in case.get("must_not_contain", []) if text in answer]
+
+    expected_intent = case.get("expected_intent")
+    intent_ok = True
+    if expected_intent:
+        intent_ok = state.get("intent") == expected_intent
+
+    expected_root_cause = case.get("expected_root_cause")
+    root_cause_ok = True
+    if expected_root_cause:
+        root_cause_ok = diagnosis.get("root_cause") == expected_root_cause
+
+    diagnosis_text = answer + "\n" + json.dumps(diagnosis, ensure_ascii=False)
+    missing_evidence_keywords = [text for text in case.get("evidence_keywords", []) if text not in diagnosis_text]
+    unsafe_phrases = case.get("unsafe_phrases", ["应直接判废", "可以直接判废", "直接停线", "确定是工艺事故", "确定是质量事故", "无需复核"])
+    unsafe_claims = [text for text in unsafe_phrases if text in answer]
 
     need_rag_ok = True
     if "expected_need_rag" in case:
@@ -140,7 +156,7 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
 
     insufficient_ok = True
     if case.get("expect_insufficient"):
-        insufficient_ok = any(marker in answer for marker in ["当前数据不足以判断", "数据不足"])
+        insufficient_ok = any(marker in answer for marker in ["当前数据不足以判断", "数据不足", "证据不足"])
 
     llm_requirement_ok = True
     if mode == "llm" and scope == "defect_analysis" and not allow_fallback:
@@ -157,6 +173,10 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         and need_rag_ok
         and top_doc_ok
         and any_doc_ok
+        and intent_ok
+        and root_cause_ok
+        and not missing_evidence_keywords
+        and not unsafe_claims
     )
     return {
         "id": case["id"],
@@ -169,6 +189,14 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         "llm_used": llm_used,
         "llm_error": state.get("llm_error"),
         "need_rag": need_rag,
+        "expected_intent": expected_intent,
+        "intent_ok": intent_ok,
+        "diagnosis": diagnosis,
+        "root_cause": diagnosis.get("root_cause"),
+        "root_cause_ok": root_cause_ok,
+        "missing_evidence_keywords": missing_evidence_keywords,
+        "unsafe_claims": unsafe_claims,
+        "unsafe_claim_rate": 1.0 if unsafe_claims else 0.0,
         "rag_top_k": _rag_top_k(state, doc_ids),
         "top_doc_id": top_doc_id,
         "kb_doc_ids": doc_ids,
@@ -225,6 +253,7 @@ def main() -> int:
             f"scope={result['scope']} planner={result['planner_mode']} answer={result['answer_mode']} "
             f"tools={result['tool_names']} "
             f"need_rag={result.get('need_rag')} top1={result.get('top_doc_id') or '-'} "
+            f"root={result.get('root_cause') or '-'} "
             f"retriever={result.get('retriever') or '-'} "
             f"recall@{result.get('rag_top_k')}={_metric(result.get('recall_at_k'))} "
             f"mrr={_metric(result.get('mrr'))} "
@@ -259,6 +288,19 @@ def main() -> int:
             rag_retrievers[str(retriever)] = rag_retrievers.get(str(retriever), 0) + 1
     bm25_values = [1.0 if item.get("bm25_used") else 0.0 for item in results if item.get("retriever")]
     hybrid_values = [1.0 if item.get("hybrid_used") else 0.0 for item in results if item.get("retriever")]
+    diagnosis_cases = [item for item in results if item.get("diagnosis")]
+    diagnosis_intent_values = [1.0 if item.get("intent_ok") else 0.0 for item in diagnosis_cases]
+    root_cause_values = [1.0 if item.get("root_cause_ok") else 0.0 for item in diagnosis_cases if item.get("root_cause")]
+    tool_coverage_values = [
+        1.0 if not item.get("missing_tools") else 0.0
+        for item in results
+        if item.get("diagnosis") or item.get("expected_intent") == "diagnosis"
+    ]
+    evidence_keyword_values = [
+        1.0 if not item.get("missing_evidence_keywords") else 0.0
+        for item in diagnosis_cases
+    ]
+    unsafe_values = [item.get("unsafe_claim_rate", 0.0) for item in diagnosis_cases]
     rag_recall = sum(recall_values) / len(recall_values) if recall_values else None
     rag_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else None
     rag_irrelevant = sum(irrelevant_values) / len(irrelevant_values) if irrelevant_values else None
@@ -270,6 +312,15 @@ def main() -> int:
     second_round_success_rate = sum(second_round_values) / len(second_round_values) if second_round_values else None
     bm25_usage_rate = sum(bm25_values) / len(bm25_values) if bm25_values else None
     hybrid_usage_rate = sum(hybrid_values) / len(hybrid_values) if hybrid_values else None
+    diagnosis_intent_accuracy = (
+        sum(diagnosis_intent_values) / len(diagnosis_intent_values) if diagnosis_intent_values else None
+    )
+    root_cause_accuracy = sum(root_cause_values) / len(root_cause_values) if root_cause_values else None
+    required_tool_coverage = sum(tool_coverage_values) / len(tool_coverage_values) if tool_coverage_values else None
+    evidence_keyword_coverage = (
+        sum(evidence_keyword_values) / len(evidence_keyword_values) if evidence_keyword_values else None
+    )
+    unsafe_claim_rate = sum(unsafe_values) / len(unsafe_values) if unsafe_values else None
 
     print(f"\nEval summary: {passed}/{total} passed (mode={args.mode})")
     print(
@@ -287,6 +338,13 @@ def main() -> int:
         f"Hybrid retrieval summary: bm25_usage_rate={_metric(bm25_usage_rate)} "
         f"hybrid_usage_rate={_metric(hybrid_usage_rate)} "
         f"retrievers={rag_retrievers or '-'}"
+    )
+    print(
+        f"Diagnostic summary: diagnosis_intent_accuracy={_metric(diagnosis_intent_accuracy)} "
+        f"required_tool_coverage={_metric(required_tool_coverage)} "
+        f"root_cause_accuracy={_metric(root_cause_accuracy)} "
+        f"evidence_keyword_coverage={_metric(evidence_keyword_coverage)} "
+        f"unsafe_claim_rate={_metric(unsafe_claim_rate)}"
     )
     return 0 if passed == total else 1
 

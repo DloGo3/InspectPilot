@@ -47,6 +47,22 @@
           </ol>
         </section>
 
+        <section v-if="diagnosis && diagnosis.root_cause" class="evidence-section">
+          <h2>诊断结果</h2>
+          <div class="diagnosis-grid">
+            <span>intent={{ diagnosis.diagnosis_intent || "-" }}</span>
+            <span>root={{ diagnosis.root_cause || "-" }}</span>
+            <span>risk={{ diagnosis.false_positive_risk || "-" }}</span>
+            <span>scenario={{ diagnosis.key_metrics?.scenario_id || "-" }}</span>
+          </div>
+          <p class="diagnosis-summary">{{ diagnosis.conclusion || diagnosis.summary }}</p>
+          <ul class="tool-list">
+            <li v-for="(item, index) in diagnosis.evidence || []" :key="`diag-evidence-${index}`">
+              <span>{{ item }}</span>
+            </li>
+          </ul>
+        </section>
+
         <section v-if="ragTrace.length" class="evidence-section">
           <h2>RAG Trace</h2>
           <ul class="trace-list">
@@ -120,6 +136,7 @@ const apiBase = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 const knowledgeEvidence = computed(() => response.value?.kb_evidence || []);
 const toolCalls = computed(() => response.value?.tool_calls || []);
 const ragTrace = computed(() => response.value?.rag_trace || []);
+const diagnosis = computed(() => response.value?.diagnosis || null);
 
 function formatScore(score) {
   if (typeof score !== "number") {
@@ -367,6 +384,20 @@ button:disabled {
 
 .tool-list span {
   color: #627d98;
+}
+
+.diagnosis-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #486581;
+  font-size: 13px;
+}
+
+.diagnosis-summary {
+  margin: 10px 0;
+  line-height: 1.6;
+  color: #243b53;
 }
 
 .error {

@@ -31,6 +31,30 @@ FACE_WORDS = {
 
 def infer_intent(question: str) -> str:
     q = question.strip()
+    if any(
+        word in q
+        for word in [
+            "突然增多",
+            "突然变多",
+            "明显增多",
+            "变多",
+            "升高",
+            "突增",
+            "异常",
+            "诊断",
+            "质量问题",
+            "检测系统",
+            "成像",
+            "相机",
+            "camera",
+            "CAM",
+            "真实质量",
+            "判废",
+            "停线",
+            "复检",
+        ]
+    ):
+        return "diagnosis"
     if "报告" in q or "生成" in q:
         return "report"
     if any(word in q for word in ["原因", "为什么", "标准", "等级", "规则", "模板", "说明", "解释", "怎么判定", "如何判定", "建议", "导致", "一定", "危险", "人工确认", "误检", "看错", "工艺问题"]):
@@ -112,7 +136,7 @@ def parse_time_range(question: str, db_path: Optional[str] = None) -> Tuple[Opti
 
 
 def should_use_rag(question: str, intent: str) -> bool:
-    return intent in {"knowledge", "report"} or any(
+    return intent in {"knowledge", "report", "diagnosis"} or any(
         word in question
-        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核", "导致", "一定", "危险", "人工确认", "误检", "看错", "工艺问题"]
+        for word in ["原因", "标准", "等级", "规则", "模板", "为什么", "建议", "说明", "解释", "判定", "复核", "导致", "一定", "危险", "人工确认", "误检", "看错", "工艺问题", "质量问题", "检测系统", "相机异常"]
     )

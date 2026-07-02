@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
     need_rag: bool = False
     kb_evidence: List[Dict[str, Any]] = Field(default_factory=list)
     rag_trace: List[Dict[str, Any]] = Field(default_factory=list)
+    diagnosis: Dict[str, Any] = Field(default_factory=dict)
     tool_results: Dict[str, Any] = Field(default_factory=dict)
     report_path: Optional[str] = None
 
