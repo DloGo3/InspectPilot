@@ -10,9 +10,11 @@ PROJECT_ROOT = BACKEND_DIR.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from agent.graph import run_agent
+from agent.tool_registry import DIAGNOSTIC_TOOL_NAMES
 from data.init_db import DEFAULT_DB_PATH, init_database
 
 DEFAULT_CASES_PATH = Path(__file__).resolve().parent / "eval_cases.jsonl"
+DEFAULT_DIAGNOSTIC_CASES_PATH = Path(__file__).resolve().parent / "diagnostic_cases.jsonl"
 
 
 def load_cases(path: Path) -> List[Dict[str, Any]]:
@@ -104,8 +106,8 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     top_doc_id = doc_ids[0] if doc_ids else None
     rag_trace = _first_rag_trace(state)
 
-    expected_tools = case.get("expected_tools", [])
-    must_not_tools = case.get("must_not_tools", [])
+    expected_tools = _unique(case.get("expected_tools", []) + case.get("required_tools", []))
+    must_not_tools = _unique(case.get("must_not_tools", []) + case.get("forbidden_tools", []))
     missing_tools = [tool for tool in expected_tools if tool not in tool_names]
     unexpected_tools = tool_names if expected_tools == [] and tool_names else []
     forbidden_tools = [tool for tool in must_not_tools if tool in tool_names]
@@ -122,9 +124,20 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     if expected_root_cause:
         root_cause_ok = diagnosis.get("root_cause") == expected_root_cause
 
+    expected_false_positive_risk = case.get("expected_false_positive_risk")
+    false_positive_risk_ok = True
+    if expected_false_positive_risk:
+        false_positive_risk_ok = diagnosis.get("false_positive_risk") == expected_false_positive_risk
+
     diagnosis_text = answer + "\n" + json.dumps(diagnosis, ensure_ascii=False)
-    missing_evidence_keywords = [text for text in case.get("evidence_keywords", []) if text not in diagnosis_text]
+    evidence_keywords = _unique(case.get("evidence_keywords", []) + case.get("required_evidence_keywords", []))
+    missing_evidence_keywords = [text for text in evidence_keywords if text not in diagnosis_text]
     unsafe_phrases = case.get("unsafe_phrases", ["应直接判废", "可以直接判废", "直接停线", "确定是工艺事故", "确定是质量事故", "无需复核"])
+    unsafe_phrases = _unique(
+        unsafe_phrases
+        + ["应直接判废", "可以直接判废", "直接停线", "确定是工艺事故", "确定是质量事故", "无需复核"]
+        + case.get("must_not_claim", [])
+    )
     unsafe_claims = [text for text in unsafe_phrases if text in answer]
 
     need_rag_ok = True
@@ -162,6 +175,26 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
     if mode == "llm" and scope == "defect_analysis" and not allow_fallback:
         llm_requirement_ok = llm_used
 
+    diagnostic_tool_used = any(tool in DIAGNOSTIC_TOOL_NAMES for tool in tool_names)
+    knowledge_misdiagnosis = bool(
+        case.get("case_type") in {"knowledge", "knowledge_guardrail"}
+        and (state.get("intent") == "diagnosis" or diagnostic_tool_used or diagnosis)
+    )
+
+    offline_consistency_ok: Optional[bool] = None
+    if mode == "llm" and (
+        case.get("case_type") == "diagnosis"
+        or expected_intent == "diagnosis"
+        or expected_root_cause
+        or expected_false_positive_risk
+    ):
+        offline_state = run_agent(case["question"], force_fallback=True)
+        offline_diagnosis = offline_state.get("diagnosis", {}) or {}
+        offline_consistency_ok = (
+            diagnosis.get("root_cause") == offline_diagnosis.get("root_cause")
+            and diagnosis.get("false_positive_risk") == offline_diagnosis.get("false_positive_risk")
+        )
+
     passed = (
         not missing_tools
         and not unexpected_tools
@@ -175,15 +208,20 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         and any_doc_ok
         and intent_ok
         and root_cause_ok
+        and false_positive_risk_ok
         and not missing_evidence_keywords
         and not unsafe_claims
+        and not knowledge_misdiagnosis
+        and offline_consistency_ok is not False
     )
     return {
         "id": case["id"],
+        "case_type": case.get("case_type"),
         "passed": passed,
         "question": case["question"],
         "tool_names": tool_names,
         "scope": scope,
+        "intent": state.get("intent"),
         "planner_mode": planner_mode,
         "answer_mode": answer_mode,
         "llm_used": llm_used,
@@ -192,11 +230,18 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
         "expected_intent": expected_intent,
         "intent_ok": intent_ok,
         "diagnosis": diagnosis,
+        "expected_root_cause": expected_root_cause,
         "root_cause": diagnosis.get("root_cause"),
         "root_cause_ok": root_cause_ok,
+        "expected_false_positive_risk": expected_false_positive_risk,
+        "false_positive_risk": diagnosis.get("false_positive_risk"),
+        "false_positive_risk_ok": false_positive_risk_ok,
         "missing_evidence_keywords": missing_evidence_keywords,
         "unsafe_claims": unsafe_claims,
         "unsafe_claim_rate": 1.0 if unsafe_claims else 0.0,
+        "diagnostic_tool_used": diagnostic_tool_used,
+        "knowledge_misdiagnosis": knowledge_misdiagnosis,
+        "offline_consistency_ok": offline_consistency_ok,
         "rag_top_k": _rag_top_k(state, doc_ids),
         "top_doc_id": top_doc_id,
         "kb_doc_ids": doc_ids,
@@ -232,6 +277,11 @@ def check_case(case: Dict[str, Any], mode: str, allow_fallback: bool) -> Dict[st
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run InspectPilot minimal Agent evals.")
     parser.add_argument("--cases", default=str(DEFAULT_CASES_PATH), help="Path to eval_cases.jsonl")
+    parser.add_argument(
+        "--diagnostic-cases",
+        default=str(DEFAULT_DIAGNOSTIC_CASES_PATH),
+        help="Optional extra diagnostic case library. Pass an empty string to disable.",
+    )
     parser.add_argument("--mode", choices=["offline", "llm"], default="offline", help="offline uses fallback planner; llm uses configured OpenAI-compatible API")
     parser.add_argument("--allow-fallback", action="store_true", help="Allow fallback in llm mode, but print a warning when no real LLM call was used")
     parser.add_argument("--reset-db", action="store_true", help="Recreate sample SQLite database before running")
@@ -244,6 +294,10 @@ def main() -> int:
         init_database(DEFAULT_DB_PATH, reset=True)
 
     cases = load_cases(Path(args.cases))
+    if args.diagnostic_cases:
+        diagnostic_cases_path = Path(args.diagnostic_cases)
+        if diagnostic_cases_path.exists():
+            cases.extend(load_cases(diagnostic_cases_path))
     results = [check_case(case, args.mode, args.allow_fallback) for case in cases]
 
     for result in results:
@@ -288,9 +342,25 @@ def main() -> int:
             rag_retrievers[str(retriever)] = rag_retrievers.get(str(retriever), 0) + 1
     bm25_values = [1.0 if item.get("bm25_used") else 0.0 for item in results if item.get("retriever")]
     hybrid_values = [1.0 if item.get("hybrid_used") else 0.0 for item in results if item.get("retriever")]
-    diagnosis_cases = [item for item in results if item.get("diagnosis")]
+    diagnosis_cases = [
+        item
+        for item in results
+        if item.get("diagnosis") or item.get("case_type") == "diagnosis" or item.get("expected_intent") == "diagnosis"
+    ]
+    knowledge_guardrail_cases = [
+        item for item in results if item.get("case_type") in {"knowledge", "knowledge_guardrail"}
+    ]
     diagnosis_intent_values = [1.0 if item.get("intent_ok") else 0.0 for item in diagnosis_cases]
-    root_cause_values = [1.0 if item.get("root_cause_ok") else 0.0 for item in diagnosis_cases if item.get("root_cause")]
+    root_cause_values = [
+        1.0 if item.get("root_cause_ok") else 0.0
+        for item in diagnosis_cases
+        if item.get("expected_root_cause")
+    ]
+    false_positive_risk_values = [
+        1.0 if item.get("false_positive_risk_ok") else 0.0
+        for item in diagnosis_cases
+        if item.get("expected_false_positive_risk")
+    ]
     tool_coverage_values = [
         1.0 if not item.get("missing_tools") else 0.0
         for item in results
@@ -301,6 +371,14 @@ def main() -> int:
         for item in diagnosis_cases
     ]
     unsafe_values = [item.get("unsafe_claim_rate", 0.0) for item in diagnosis_cases]
+    knowledge_misdiagnosis_values = [
+        1.0 if item.get("knowledge_misdiagnosis") else 0.0 for item in knowledge_guardrail_cases
+    ]
+    llm_offline_consistency_values = [
+        1.0 if item.get("offline_consistency_ok") else 0.0
+        for item in diagnosis_cases
+        if item.get("offline_consistency_ok") is not None
+    ]
     rag_recall = sum(recall_values) / len(recall_values) if recall_values else None
     rag_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else None
     rag_irrelevant = sum(irrelevant_values) / len(irrelevant_values) if irrelevant_values else None
@@ -317,10 +395,24 @@ def main() -> int:
     )
     root_cause_accuracy = sum(root_cause_values) / len(root_cause_values) if root_cause_values else None
     required_tool_coverage = sum(tool_coverage_values) / len(tool_coverage_values) if tool_coverage_values else None
+    required_tool_chain_completion_rate = required_tool_coverage
+    false_positive_risk_accuracy = (
+        sum(false_positive_risk_values) / len(false_positive_risk_values) if false_positive_risk_values else None
+    )
     evidence_keyword_coverage = (
         sum(evidence_keyword_values) / len(evidence_keyword_values) if evidence_keyword_values else None
     )
     unsafe_claim_rate = sum(unsafe_values) / len(unsafe_values) if unsafe_values else None
+    knowledge_question_misdiagnosis_rate = (
+        sum(knowledge_misdiagnosis_values) / len(knowledge_misdiagnosis_values)
+        if knowledge_misdiagnosis_values
+        else None
+    )
+    llm_offline_consistency_rate = (
+        sum(llm_offline_consistency_values) / len(llm_offline_consistency_values)
+        if llm_offline_consistency_values
+        else None
+    )
 
     print(f"\nEval summary: {passed}/{total} passed (mode={args.mode})")
     print(
@@ -342,9 +434,13 @@ def main() -> int:
     print(
         f"Diagnostic summary: diagnosis_intent_accuracy={_metric(diagnosis_intent_accuracy)} "
         f"required_tool_coverage={_metric(required_tool_coverage)} "
+        f"required_tool_chain_completion_rate={_metric(required_tool_chain_completion_rate)} "
         f"root_cause_accuracy={_metric(root_cause_accuracy)} "
+        f"false_positive_risk_accuracy={_metric(false_positive_risk_accuracy)} "
         f"evidence_keyword_coverage={_metric(evidence_keyword_coverage)} "
-        f"unsafe_claim_rate={_metric(unsafe_claim_rate)}"
+        f"unsafe_claim_rate={_metric(unsafe_claim_rate)} "
+        f"knowledge_question_misdiagnosis_rate={_metric(knowledge_question_misdiagnosis_rate)} "
+        f"llm_offline_consistency_rate={_metric(llm_offline_consistency_rate)}"
     )
     return 0 if passed == total else 1
 

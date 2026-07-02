@@ -104,3 +104,13 @@ def test_diagnostic_planner_guardrail_expands_partial_llm_plan():
     assert guarded[-1]["name"] == "retrieve_defect_knowledge"
     assert guarded[-1]["arguments"]["query"] == "camera2 diagnosis"
     assert guarded[-1]["arguments"]["top_k"] >= 5
+
+
+def test_knowledge_question_does_not_trigger_diagnostic_tools():
+    init_database(BACKEND_DIR / "data" / "defects.db", reset=True)
+    state = run_agent("氧化皮是什么，为什么可能误检？", force_fallback=True)
+    tool_names = [item["name"] for item in state["tool_calls"]]
+
+    assert state["intent"] == "knowledge"
+    assert tool_names == ["retrieve_defect_knowledge"]
+    assert state["diagnosis"] == {}

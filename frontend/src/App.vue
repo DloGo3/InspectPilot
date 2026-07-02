@@ -2,13 +2,13 @@
   <main class="page">
     <section class="panel">
       <h1>InspectPilot</h1>
-      <p>方坯表面缺陷检测结果分析 Agent</p>
+      <p>工业视觉质检异常诊断 Agent</p>
       <textarea v-model="question" rows="4" />
       <button :disabled="loading" @click="ask">
         {{ loading ? "分析中..." : "开始分析" }}
       </button>
       <section v-if="response" class="result">
-        <div class="answer">{{ response.answer || "后端没有返回分析结果。" }}</div>
+        <div class="answer">{{ displayAnswer }}</div>
 
         <div class="meta-row">
           <span class="badge" :class="{ active: response.need_rag }">
@@ -19,8 +19,27 @@
           <span class="badge">LLM：{{ response.llm_used ? "是" : "否" }}</span>
         </div>
 
+        <section v-if="diagnosis && diagnosis.root_cause" class="evidence-section diagnosis-section">
+          <h2>诊断数据证据</h2>
+          <div class="diagnosis-grid">
+            <span>root_cause={{ diagnosis.root_cause || "-" }}</span>
+            <span>false_positive_risk={{ diagnosis.false_positive_risk || "-" }}</span>
+            <span>evidence_sufficient={{ diagnosticEvidenceSufficient }}</span>
+            <span>scenario={{ diagnosis.key_metrics?.scenario_id || "-" }}</span>
+            <span>window={{ normalizedTimeWindow }}</span>
+          </div>
+          <p class="diagnosis-source">诊断结论来自结构化工具结果；RAG 仅用于补充规则解释和复核建议。</p>
+          <p class="diagnosis-summary">{{ normalizeCameraText(diagnosis.conclusion || diagnosis.summary) }}</p>
+          <ul class="tool-list">
+            <li v-for="(item, index) in diagnosis.evidence || []" :key="`diag-evidence-${index}`">
+              <span>{{ normalizeCameraText(item) }}</span>
+            </li>
+          </ul>
+          <p class="safety-note">本结论不等于判废或停线指令，仍需结合原图、人工复核和现场工艺记录确认。</p>
+        </section>
+
         <section v-if="knowledgeEvidence.length" class="evidence-section">
-          <h2>参考知识</h2>
+          <h2>RAG 参考知识</h2>
           <ol class="evidence-list">
             <li v-for="item in knowledgeEvidence" :key="item.doc_id || item.rank">
               <div class="evidence-title">
@@ -45,22 +64,6 @@
               <p>{{ item.content }}</p>
             </li>
           </ol>
-        </section>
-
-        <section v-if="diagnosis && diagnosis.root_cause" class="evidence-section">
-          <h2>诊断结果</h2>
-          <div class="diagnosis-grid">
-            <span>intent={{ diagnosis.diagnosis_intent || "-" }}</span>
-            <span>root={{ diagnosis.root_cause || "-" }}</span>
-            <span>risk={{ diagnosis.false_positive_risk || "-" }}</span>
-            <span>scenario={{ diagnosis.key_metrics?.scenario_id || "-" }}</span>
-          </div>
-          <p class="diagnosis-summary">{{ diagnosis.conclusion || diagnosis.summary }}</p>
-          <ul class="tool-list">
-            <li v-for="(item, index) in diagnosis.evidence || []" :key="`diag-evidence-${index}`">
-              <span>{{ item }}</span>
-            </li>
-          </ul>
         </section>
 
         <section v-if="ragTrace.length" class="evidence-section">
@@ -137,6 +140,29 @@ const knowledgeEvidence = computed(() => response.value?.kb_evidence || []);
 const toolCalls = computed(() => response.value?.tool_calls || []);
 const ragTrace = computed(() => response.value?.rag_trace || []);
 const diagnosis = computed(() => response.value?.diagnosis || null);
+const diagnosisMetrics = computed(() => diagnosis.value?.key_metrics || {});
+const displayAnswer = computed(() =>
+  normalizeCameraText(response.value?.answer || "后端没有返回分析结果。"),
+);
+const diagnosticEvidenceSufficient = computed(() =>
+  diagnosis.value && diagnosis.value.root_cause !== "insufficient_evidence" ? "yes" : "no",
+);
+const normalizedTimeWindow = computed(() => {
+  const spike = diagnosisMetrics.value?.spike || {};
+  const start = spike.analysis_start || response.value?.time_window?.start_time;
+  const end = spike.target_end || response.value?.time_window?.end_time;
+  if (!start && !end) {
+    return "-";
+  }
+  return `${start || "-"} ~ ${end || "-"}`;
+});
+
+function normalizeCameraText(value) {
+  if (typeof value !== "string") {
+    return value || "";
+  }
+  return value.replace(/\/camera\d+/gi, "");
+}
 
 function formatScore(score) {
   if (typeof score !== "number") {
@@ -392,6 +418,22 @@ button:disabled {
   gap: 10px;
   color: #486581;
   font-size: 13px;
+}
+
+.diagnosis-section {
+  border-top-color: #bcccdc;
+}
+
+.diagnosis-source,
+.safety-note {
+  margin: 8px 0;
+  line-height: 1.5;
+  color: #486581;
+  font-size: 13px;
+}
+
+.safety-note {
+  color: #8a4b08;
 }
 
 .diagnosis-summary {

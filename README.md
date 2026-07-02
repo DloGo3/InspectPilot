@@ -71,6 +71,14 @@ InspectPilot 是一个面向钢铁方坯表面视觉检测结果的工业视觉�
 - 诊断类 RAG 检索至少拉取 5 条知识片段，确保回答能覆盖缺陷说明、复核闭环、表面判定标准和原因排查清单
 - 诊断答案以 `estimate_false_positive_risk` 的结构化结果为准，LLM 不再覆盖工具给出的根因、风险等级和建议动作
 
+## v0.4.2 Diagnostic Eval + Case Library
+
+- 新增 `backend/evals/diagnostic_cases.jsonl`，将前端手工验证过的裂纹突增诊断能力固化为自动化回归场景库
+- 诊断 case 同时检查意图识别、工具链完整性、`root_cause`、`false_positive_risk`、关键证据覆盖和危险结论拦截
+- `eval_runner.py` 默认合并执行通用评测集和诊断场景库，并新增/补充诊断指标：`required_tool_chain_completion_rate`、`false_positive_risk_accuracy`、`knowledge_question_misdiagnosis_rate`、`llm_offline_consistency_rate`
+- 增加知识问题防误诊用例，确保“氧化皮是什么，为什么可能误检？”这类问题只走 RAG，不触发诊断工具链
+- 前端将“诊断数据证据”放在 RAG 参考知识之前，明确展示 `root_cause`、`false_positive_risk`、证据充足性、诊断场景和归一化时间窗口
+
 ## 启动后端
 
 ```powershell

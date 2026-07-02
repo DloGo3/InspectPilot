@@ -591,7 +591,7 @@ def estimate_false_positive_risk(
         false_positive_risk = "high"
         root_cause = "camera_imaging_abnormal"
         conclusion = (
-            f"更可能是 {target_camera}/camera2 成像或采集状态异常导致的误检风险升高，"
+            f"更可能是 {target_camera} 成像或采集状态异常导致的误检风险升高，"
             "暂不应直接判定为真实质量事故。"
         )
         status = "diagnosed"
@@ -671,10 +671,16 @@ def estimate_false_positive_risk(
         actions = ["先抽查原图并复核高风险样本", "补充相机状态和工艺记录后再做根因判断"]
         missing_data = ["人工复核结果", "更多相机/图像质量样本", "工艺上下文"]
 
+    concentration_evidence = (
+        f"整体涉及 {affected_cameras} 台相机和 {affected_billets} 支方坯；"
+        f"Top 相机 {target_camera} 内部边缘/边部区域占比 {edge_ratio}%，低置信度占比 {low_conf_ratio}%"
+        if affected_cameras >= 3
+        else f"{target_camera} 边部/边缘区域占比 {edge_ratio}%，低置信度占比 {low_conf_ratio}%"
+    )
     evidence = [
         spike["summary"],
         concentration["summary"],
-        f"{target_camera} 边部/边缘区域占比 {edge_ratio}%，低置信度占比 {low_conf_ratio}%",
+        concentration_evidence,
         health["summary"],
         quality["summary"],
         "不能只根据缺陷数量或空间集中直接判定质量事故/工艺事故",
