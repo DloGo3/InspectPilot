@@ -20,21 +20,60 @@
         </div>
 
         <section v-if="diagnosis && diagnosis.root_cause" class="evidence-section diagnosis-section">
-          <h2>诊断数据证据</h2>
-          <div class="diagnosis-grid">
-            <span>root_cause={{ diagnosis.root_cause || "-" }}</span>
-            <span>false_positive_risk={{ diagnosis.false_positive_risk || "-" }}</span>
-            <span>evidence_sufficient={{ diagnosticEvidenceSufficient }}</span>
-            <span>scenario={{ diagnosis.key_metrics?.scenario_id || "-" }}</span>
-            <span>window={{ normalizedTimeWindow }}</span>
+          <div class="diagnosis-header">
+            <div>
+              <h2>诊断数据证据</h2>
+              <p class="diagnosis-source">诊断结论来自结构化工具结果；RAG 仅用于补充规则解释和复核建议。</p>
+            </div>
+            <span class="diagnosis-status-pill" :class="diagnosisStatusTone">
+              {{ diagnosticEvidenceSufficient === "yes" ? "证据充分" : "证据不足" }}
+            </span>
           </div>
-          <p class="diagnosis-source">诊断结论来自结构化工具结果；RAG 仅用于补充规则解释和复核建议。</p>
-          <p class="diagnosis-summary">{{ normalizeCameraText(diagnosis.conclusion || diagnosis.summary) }}</p>
-          <ul class="tool-list">
-            <li v-for="(item, index) in diagnosis.evidence || []" :key="`diag-evidence-${index}`">
-              <span>{{ normalizeCameraText(item) }}</span>
-            </li>
-          </ul>
+
+          <div class="diagnosis-overview">
+            <div class="diagnosis-conclusion">
+              <span>结构化结论</span>
+              <strong>{{ normalizeCameraText(diagnosis.conclusion || diagnosis.summary) }}</strong>
+            </div>
+            <div class="diagnosis-state-grid">
+              <article
+                v-for="item in diagnosisStatusCards"
+                :key="item.label"
+                class="diagnosis-state-card"
+                :class="`tone-${item.tone}`"
+              >
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </article>
+            </div>
+          </div>
+
+          <div v-if="diagnosisMetricCards.length" class="diagnosis-metrics">
+            <div v-for="item in diagnosisMetricCards" :key="item.label" class="diagnosis-metric">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+
+          <div class="diagnosis-detail-grid">
+            <div v-if="diagnosisEvidenceLines.length" class="diagnosis-detail-block">
+              <h3>关键证据</h3>
+              <ul class="diagnosis-list">
+                <li v-for="(item, index) in diagnosisEvidenceLines" :key="`diag-evidence-${index}`">
+                  {{ item }}
+                </li>
+              </ul>
+            </div>
+            <div v-if="diagnosisMissingData.length" class="diagnosis-detail-block">
+              <h3>仍需补充</h3>
+              <ul class="diagnosis-list compact">
+                <li v-for="(item, index) in diagnosisMissingData" :key="`diag-missing-${index}`">
+                  {{ item }}
+                </li>
+              </ul>
+            </div>
+          </div>
+
           <p class="safety-note">本结论不等于判废或停线指令，仍需结合原图、人工复核和现场工艺记录确认。</p>
         </section>
 
@@ -144,9 +183,77 @@ const diagnosisMetrics = computed(() => diagnosis.value?.key_metrics || {});
 const displayAnswer = computed(() =>
   normalizeCameraText(response.value?.answer || "后端没有返回分析结果。"),
 );
-const diagnosticEvidenceSufficient = computed(() =>
-  diagnosis.value && diagnosis.value.root_cause !== "insufficient_evidence" ? "yes" : "no",
+const diagnosticEvidenceSufficient = computed(() => {
+  const value = diagnosis.value?.evidence_sufficient;
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return diagnosis.value && diagnosis.value.root_cause !== "insufficient_evidence" ? "yes" : "no";
+});
+const diagnosisStatusTone = computed(() =>
+  diagnosticEvidenceSufficient.value === "yes" ? "tone-good" : "tone-warning",
 );
+const diagnosisStatusCards = computed(() => [
+  {
+    label: "根因判断",
+    value: labelRootCause(diagnosis.value?.root_cause),
+    tone: rootCauseTone(diagnosis.value?.root_cause),
+  },
+  {
+    label: "误检风险",
+    value: labelRisk(diagnosis.value?.false_positive_risk),
+    tone: riskTone(diagnosis.value?.false_positive_risk),
+  },
+  {
+    label: "证据状态",
+    value: diagnosticEvidenceSufficient.value === "yes" ? "充分" : "不足",
+    tone: diagnosticEvidenceSufficient.value === "yes" ? "good" : "warning",
+  },
+]);
+const diagnosisEvidenceLines = computed(() =>
+  (diagnosis.value?.evidence || []).map((item) => normalizeCameraText(item)).filter(Boolean),
+);
+const diagnosisMissingData = computed(() =>
+  (diagnosis.value?.missing_data || []).map((item) => normalizeCameraText(item)).filter(Boolean),
+);
+const diagnosisMetricCards = computed(() => {
+  const metrics = diagnosisMetrics.value || {};
+  const spike = metrics.spike || {};
+  const cards = [];
+  const targetCount = pickNumber(spike.target_count, metrics.target_count);
+  const spikeRatio = pickNumber(spike.spike_ratio);
+  const topCamera = metrics.target_camera || metrics.top_camera || "-";
+  const topRatio = pickNumber(metrics.top_camera_ratio_pct);
+  const affectedCameras = pickNumber(metrics.affected_cameras);
+  const affectedBillets = pickNumber(metrics.affected_billets);
+
+  cards.push({ label: "时间窗口", value: normalizedTimeWindow.value });
+  if (targetCount !== null) {
+    const ratioText = spikeRatio !== null ? ` / ${formatCompactNumber(spikeRatio)} 倍` : "";
+    cards.push({ label: "目标缺陷", value: `${targetCount} 条${ratioText}` });
+  }
+  if (topCamera !== "-") {
+    const ratioText = topRatio !== null ? ` / ${formatPercent(topRatio)}` : "";
+    cards.push({ label: "Top 相机", value: `${normalizeCameraText(topCamera)}${ratioText}` });
+  }
+  if (affectedCameras !== null || affectedBillets !== null) {
+    cards.push({
+      label: "覆盖范围",
+      value: `${affectedCameras ?? "-"} 台相机 / ${affectedBillets ?? "-"} 支方坯`,
+    });
+  }
+  if (metrics.camera_status) {
+    cards.push({ label: "相机状态", value: labelHealthStatus(metrics.camera_status) });
+  }
+  if (metrics.image_quality_status) {
+    cards.push({ label: "图像质量", value: labelHealthStatus(metrics.image_quality_status) });
+  }
+
+  return cards.filter((item) => item.value && item.value !== "-");
+});
 const normalizedTimeWindow = computed(() => {
   const spike = diagnosisMetrics.value?.spike || {};
   const start = spike.analysis_start || response.value?.time_window?.start_time;
@@ -156,6 +263,15 @@ const normalizedTimeWindow = computed(() => {
   }
   return `${start || "-"} ~ ${end || "-"}`;
 });
+
+function pickNumber(...values) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
 
 function normalizeCameraText(value) {
   if (typeof value !== "string") {
@@ -176,6 +292,72 @@ function formatRatio(value) {
     return "-";
   }
   return value.toFixed(2);
+}
+
+function formatCompactNumber(value) {
+  if (typeof value !== "number") {
+    return "-";
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatPercent(value) {
+  if (typeof value !== "number") {
+    return "-";
+  }
+  return `${formatCompactNumber(value)}%`;
+}
+
+function labelRootCause(value) {
+  const labels = {
+    camera_imaging_abnormal: "相机成像异常",
+    quality_wave: "真实质量波动",
+    insufficient_evidence: "证据不足",
+    ambiguous: "仍有不确定性",
+  };
+  return labels[value] || value || "-";
+}
+
+function rootCauseTone(value) {
+  if (value === "camera_imaging_abnormal") {
+    return "danger";
+  }
+  if (value === "quality_wave") {
+    return "warning";
+  }
+  if (value === "insufficient_evidence" || value === "ambiguous") {
+    return "neutral";
+  }
+  return "neutral";
+}
+
+function labelRisk(value) {
+  const labels = {
+    high: "高",
+    medium: "中",
+    low: "低",
+    unknown: "未知",
+  };
+  return labels[value] || value || "-";
+}
+
+function riskTone(value) {
+  const tones = {
+    high: "danger",
+    medium: "warning",
+    low: "good",
+    unknown: "neutral",
+  };
+  return tones[value] || "neutral";
+}
+
+function labelHealthStatus(value) {
+  const labels = {
+    abnormal: "异常",
+    normal: "正常",
+    no_data: "无数据",
+  };
+  return labels[value] || value || "-";
 }
 
 async function ask() {
@@ -412,28 +594,193 @@ button:disabled {
   color: #627d98;
 }
 
-.diagnosis-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  color: #486581;
-  font-size: 13px;
-}
-
 .diagnosis-section {
   border-top-color: #bcccdc;
 }
 
-.diagnosis-source,
-.safety-note {
-  margin: 8px 0;
+.diagnosis-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.diagnosis-header h2 {
+  margin-bottom: 4px;
+}
+
+.diagnosis-source {
+  margin: 0;
   line-height: 1.5;
   color: #486581;
   font-size: 13px;
 }
 
-.safety-note {
+.diagnosis-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.diagnosis-status-pill.tone-good {
+  background: #d9f2e6;
+  color: #0b6b47;
+}
+
+.diagnosis-status-pill.tone-warning {
+  background: #fff3cd;
   color: #8a4b08;
+}
+
+.diagnosis-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.9fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.diagnosis-conclusion {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #bcccdc;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.diagnosis-conclusion span,
+.diagnosis-state-card span,
+.diagnosis-metric span {
+  color: #627d98;
+  font-size: 12px;
+}
+
+.diagnosis-conclusion strong {
+  color: #102a43;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.diagnosis-state-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.diagnosis-state-card {
+  display: grid;
+  gap: 8px;
+  align-content: center;
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.diagnosis-state-card strong {
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.diagnosis-state-card.tone-danger {
+  border-color: #f1b8b5;
+  background: #fff7f7;
+}
+
+.diagnosis-state-card.tone-danger strong {
+  color: #b42318;
+}
+
+.diagnosis-state-card.tone-warning {
+  border-color: #f5d48a;
+  background: #fffaf0;
+}
+
+.diagnosis-state-card.tone-warning strong {
+  color: #8a4b08;
+}
+
+.diagnosis-state-card.tone-good {
+  border-color: #9ddfc5;
+  background: #f3fbf7;
+}
+
+.diagnosis-state-card.tone-good strong {
+  color: #0b6b47;
+}
+
+.diagnosis-state-card.tone-neutral strong {
+  color: #334e68;
+}
+
+.diagnosis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.diagnosis-metric {
+  display: grid;
+  gap: 4px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.diagnosis-metric strong {
+  color: #243b53;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.diagnosis-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.diagnosis-detail-block {
+  padding: 12px 14px;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.diagnosis-detail-block h3 {
+  margin: 0 0 8px;
+  color: #102a43;
+  font-size: 15px;
+}
+
+.diagnosis-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 18px;
+  color: #334e68;
+  line-height: 1.55;
+}
+
+.diagnosis-list.compact {
+  font-size: 14px;
+}
+
+.safety-note {
+  margin: 10px 0 0;
+  line-height: 1.5;
+  color: #8a4b08;
+  font-size: 13px;
 }
 
 .diagnosis-summary {
@@ -445,5 +792,24 @@ button:disabled {
 .error {
   margin-top: 14px;
   color: #b42318;
+}
+
+@media (max-width: 780px) {
+  .page {
+    padding: 16px;
+  }
+
+  .panel {
+    padding: 18px;
+  }
+
+  .diagnosis-overview,
+  .diagnosis-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnosis-state-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
